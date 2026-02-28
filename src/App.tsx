@@ -34,24 +34,47 @@ declare global {
 const DEFAULT_ATTRIBUTES: ModelAttributes = {
   name: 'Aaliyah',
   gender: 'Female',
-  skinTone: 'Deep ebony',
-  bodyBuild: 'Slender, athletic',
-  height: "Tall",
+  skinTone: 'Deep Ebony',
+  bodyBuild: 'Slender / Slim',
+  height: 'Tall (5\'8" - 5\'11")',
   hairStyle: 'Buzz cut',
   hairColor: 'Black',
   ageRange: '20–25'
+};
+
+const OPTIONS = {
+  skinTones: ['Fair / Porcelain', 'Light / Ivory', 'Medium / Olive', 'Tan / Bronze', 'Rich Caramel', 'Deep Ebony'],
+  bodyBuilds: {
+    'Female': ['Slender / Slim', 'Athletic / Toned', 'Curvy / Hourglass', 'Petite', 'Pear Shaped', 'Average'],
+    'Male': ['Slender / Slim', 'Athletic / Toned', 'Muscular / Buff', 'Broad Shoulders', 'V-Taper', 'Average'],
+    'Non-binary': ['Slender / Slim', 'Athletic / Toned', 'Petite', 'Muscular', 'Androgynous', 'Average']
+  } as Record<string, string[]>,
+  heights: ['Petite (5\'0" - 5\'3")', 'Average (5\'4" - 5\'7")', 'Tall (5\'8" - 5\'11")', 'Very Tall (6\'0"+)'],
+  ageRanges: ['18–24', '25–34', '35–44', '45–54', '55+'],
+  hairStyles: {
+    'Female': ['Pixie cut', 'Bob', 'Shoulder length', 'Long straight', 'Long wavy', 'Curly / Afro', 'Braids / Locs', 'Ponytail', 'Bun', 'Bald'],
+    'Male': ['Buzz cut', 'Crew cut', 'Undercut', 'Pompadour', 'Short messy', 'Man bun', 'Bald', 'Braids / Locs'],
+    'Non-binary': ['Buzz cut', 'Pixie cut', 'Bob', 'Shoulder length', 'Long straight', 'Long wavy', 'Curly / Afro', 'Braids / Locs', 'Bald', 'Androgynous']
+  } as Record<string, string[]>,
+  hairColors: ['Black', 'Dark Brown', 'Light Brown', 'Blonde', 'Red / Auburn', 'Grey / Silver', 'Platinum Blonde']
 };
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('builder');
   const [attributes, setAttributes] = useState<ModelAttributes>(DEFAULT_ATTRIBUTES);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>(() => {
+    const saved = localStorage.getItem('nanobanana_models');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [currentImage, setCurrentImage] = useState<GeneratedImage | null>(null);
   const [hasApiKey, setHasApiKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>('light');
+
+  useEffect(() => {
+    localStorage.setItem('nanobanana_models', JSON.stringify(generatedImages));
+  }, [generatedImages]);
 
   useEffect(() => {
     checkApiKey();
@@ -64,6 +87,19 @@ export default function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [theme]);
+
+  // Update body build and hair style if they're not valid for the current gender
+  useEffect(() => {
+    const validBuilds = OPTIONS.bodyBuilds[attributes.gender] || OPTIONS.bodyBuilds['Non-binary'];
+    if (!validBuilds.includes(attributes.bodyBuild)) {
+      setAttributes(prev => ({ ...prev, bodyBuild: validBuilds[0] }));
+    }
+
+    const validHairStyles = OPTIONS.hairStyles[attributes.gender] || OPTIONS.hairStyles['Non-binary'];
+    if (!validHairStyles.includes(attributes.hairStyle)) {
+      setAttributes(prev => ({ ...prev, hairStyle: validHairStyles[0] }));
+    }
+  }, [attributes.gender]);
 
   const checkApiKey = async () => {
     try {
@@ -189,12 +225,6 @@ Keep every detail identical. Only change the pose.`;
     }
   };
 
-  const handleCopyPrompt = () => {
-    navigator.clipboard.writeText(generatePrompt(attributes));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   const handleDownload = (url: string, name: string) => {
     const link = document.createElement('a');
     link.href = url;
@@ -285,13 +315,13 @@ Keep every detail identical. Only change the pose.`;
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm text-krea-muted">Age Range</label>
-                <input 
-                  type="text" 
+                <select 
                   value={attributes.ageRange}
                   onChange={(e) => setAttributes({...attributes, ageRange: e.target.value})}
-                  className="krea-input w-full"
-                  placeholder="e.g. 25–34"
-                />
+                  className="krea-input w-full appearance-none"
+                >
+                  {OPTIONS.ageRanges.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
               </div>
             </div>
           </div>
@@ -301,30 +331,35 @@ Keep every detail identical. Only change the pose.`;
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <label className="text-sm text-krea-muted">Skin Tone</label>
-                <input 
-                  type="text" 
+                <select 
                   value={attributes.skinTone}
                   onChange={(e) => setAttributes({...attributes, skinTone: e.target.value})}
-                  className="krea-input w-full"
-                />
+                  className="krea-input w-full appearance-none"
+                >
+                  {OPTIONS.skinTones.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm text-krea-muted">Body Build</label>
-                <input 
-                  type="text" 
+                <select 
                   value={attributes.bodyBuild}
                   onChange={(e) => setAttributes({...attributes, bodyBuild: e.target.value})}
-                  className="krea-input w-full"
-                />
+                  className="krea-input w-full appearance-none"
+                >
+                  {(OPTIONS.bodyBuilds[attributes.gender] || OPTIONS.bodyBuilds['Non-binary']).map(opt => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm text-krea-muted">Height</label>
-                <input 
-                  type="text" 
+                <select 
                   value={attributes.height}
                   onChange={(e) => setAttributes({...attributes, height: e.target.value})}
-                  className="krea-input w-full"
-                />
+                  className="krea-input w-full appearance-none"
+                >
+                  {OPTIONS.heights.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
               </div>
             </div>
           </div>
@@ -334,21 +369,25 @@ Keep every detail identical. Only change the pose.`;
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <label className="text-sm text-krea-muted">Style</label>
-                <input 
-                  type="text" 
+                <select 
                   value={attributes.hairStyle}
                   onChange={(e) => setAttributes({...attributes, hairStyle: e.target.value})}
-                  className="krea-input w-full"
-                />
+                  className="krea-input w-full appearance-none"
+                >
+                  {(OPTIONS.hairStyles[attributes.gender] || OPTIONS.hairStyles['Non-binary']).map(opt => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm text-krea-muted">Color</label>
-                <input 
-                  type="text" 
+                <select 
                   value={attributes.hairColor}
                   onChange={(e) => setAttributes({...attributes, hairColor: e.target.value})}
-                  className="krea-input w-full"
-                />
+                  className="krea-input w-full appearance-none"
+                >
+                  {OPTIONS.hairColors.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
               </div>
             </div>
           </div>
@@ -367,18 +406,8 @@ Keep every detail identical. Only change the pose.`;
                 Generating...
               </>
             ) : (
-              <>
-                <Sparkles className="w-4 h-4" />
-                Generate Model
-              </>
+              "Generate Model"
             )}
-          </button>
-          <button 
-            onClick={handleCopyPrompt}
-            className="krea-button-secondary w-full flex items-center justify-center gap-2 py-3"
-          >
-            {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-            {copied ? 'Copied!' : 'Copy Prompt'}
           </button>
         </div>
       </aside>
