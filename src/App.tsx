@@ -138,7 +138,7 @@ Keep every detail identical. Only change the pose.`;
         },
         config: {
           imageConfig: {
-            aspectRatio: "9:16",
+            aspectRatio: "1:1",
             imageSize: "1K"
           }
         }
@@ -438,7 +438,7 @@ Keep every detail identical. Only change the pose.`;
                 ) : (
                   <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-12 items-start">
                     {/* Image Preview */}
-                    <div className="relative aspect-[9/16] bg-white/5 rounded-2xl overflow-hidden border border-white/10 shadow-2xl group">
+                    <div className="relative aspect-square bg-white/5 rounded-2xl overflow-hidden border border-white/10 shadow-2xl group">
                       {isGenerating ? (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/40 backdrop-blur-sm z-10">
                           <Loader2 className="w-10 h-10 animate-spin text-white" />
@@ -546,7 +546,7 @@ Keep every detail identical. Only change the pose.`;
                     <motion.div 
                       key={img.id}
                       layoutId={img.id}
-                      className="group relative aspect-[9/16] bg-white/5 rounded-xl overflow-hidden border border-white/10 cursor-pointer"
+                      className="group relative aspect-square bg-white/5 rounded-xl overflow-hidden border border-white/10 cursor-pointer"
                       onClick={() => {
                         setCurrentImage(img);
                         setAttributes(img.attributes);
