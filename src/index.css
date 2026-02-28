@@ -71,3 +71,27 @@
 .krea-button-secondary {
   @apply bg-krea-btn-sec-bg text-krea-btn-sec-text font-medium rounded-lg px-6 py-2 hover:opacity-80 active:scale-95 transition-all;
 }
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .krea-scrollbar::-webkit-scrollbar {
+    height: 4px;
+  }
+  .krea-scrollbar::-webkit-scrollbar-track {
+    @apply bg-krea-border/20 rounded-full;
+  }
+  .krea-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-krea-muted/40 rounded-full hover:bg-krea-muted/60 transition-colors;
+  }
+  .krea-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
+  }
+}

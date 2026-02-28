@@ -1,6 +1,7 @@
 export interface ModelAttributes {
   name: string;
   gender: string;
+  ethnicity: string;
   skinTone: string;
   bodyBuild: string;
   height: string;
