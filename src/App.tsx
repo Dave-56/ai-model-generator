@@ -207,6 +207,11 @@ export default function App() {
 
   const checkApiKey = async () => {
     try {
+      // Use key from .env when running locally
+      if (process.env.GEMINI_API_KEY?.trim()) {
+        setHasApiKey(true);
+        return;
+      }
       if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
         const selected = await window.aistudio.hasSelectedApiKey();
         setHasApiKey(selected);
