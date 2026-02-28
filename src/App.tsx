@@ -831,6 +831,18 @@ Keep every detail identical. Only change the pose.`;
                         Showing {generatedImages.length} models. 
                         {generatedImages.length > MAX_SAVED_MODELS && ` (Only the last ${MAX_SAVED_MODELS} are saved permanently)`}
                       </p>
+                      <button 
+                        onClick={() => {
+                          if (confirm('Are you sure you want to clear all models? This cannot be undone.')) {
+                            setGeneratedImages([]);
+                            setCurrentImage(null);
+                          }
+                        }}
+                        className="text-[10px] font-bold uppercase tracking-widest text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1.5"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Clear All
+                      </button>
                     </div>
                     {generatedImages.map((img) => (
                     <motion.div 
