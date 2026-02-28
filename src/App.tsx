@@ -14,7 +14,9 @@ import {
   Camera,
   RefreshCw,
   Copy,
-  Check
+  Check,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { ModelAttributes, GeneratedImage, ViewMode } from './types';
@@ -49,10 +51,19 @@ export default function App() {
   const [hasApiKey, setHasApiKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>('light');
 
   useEffect(() => {
     checkApiKey();
   }, []);
+
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
 
   const checkApiKey = async () => {
     try {
@@ -200,8 +211,8 @@ Keep every detail identical. Only change the pose.`;
           className="max-w-md w-full text-center space-y-8"
         >
           <div className="flex justify-center">
-            <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-2xl">
-              <Sparkles className="w-10 h-10 text-black" />
+            <div className="w-20 h-20 bg-krea-btn-bg rounded-2xl flex items-center justify-center shadow-2xl">
+              <Sparkles className="w-10 h-10 text-krea-btn-text" />
             </div>
           </div>
           <div className="space-y-4">
@@ -232,8 +243,8 @@ Keep every detail identical. Only change the pose.`;
       <aside className="w-80 bg-krea-sidebar border-r border-krea-border flex flex-col z-20">
         <div className="p-6 flex items-center justify-between border-b border-krea-border">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-black" />
+            <div className="w-8 h-8 bg-krea-btn-bg rounded-lg flex items-center justify-center">
+              <Sparkles className="w-5 h-5 text-krea-btn-text" />
             </div>
             <h1 className="text-xl font-display font-bold tracking-tight">Nanobanana</h1>
           </div>
@@ -391,6 +402,13 @@ Keep every detail identical. Only change the pose.`;
             </button>
           </div>
           <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="p-2 text-krea-muted hover:text-krea-text transition-colors"
+              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            >
+              {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
+            </button>
             {viewMode === 'gallery' && generatedImages.length > 0 && (
               <button 
                 onClick={() => {
@@ -408,8 +426,8 @@ Keep every detail identical. Only change the pose.`;
             <button className="p-2 text-krea-muted hover:text-white transition-colors">
               <Settings className="w-5 h-5" />
             </button>
-            <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
-              <User className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-full bg-krea-btn-sec-bg flex items-center justify-center">
+              <User className="w-4 h-4 text-krea-text" />
             </div>
           </div>
         </header>
@@ -427,7 +445,7 @@ Keep every detail identical. Only change the pose.`;
               >
                 {!currentImage && !isGenerating ? (
                   <div className="text-center space-y-6">
-                    <div className="w-24 h-24 bg-white/5 rounded-3xl flex items-center justify-center mx-auto border border-white/10">
+                    <div className="w-24 h-24 bg-krea-input-bg rounded-3xl flex items-center justify-center mx-auto border border-krea-border">
                       <ImageIcon className="w-10 h-10 text-krea-muted" />
                     </div>
                     <div className="space-y-2">
@@ -438,11 +456,11 @@ Keep every detail identical. Only change the pose.`;
                 ) : (
                   <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-12 items-start">
                     {/* Image Preview */}
-                    <div className="relative aspect-square bg-white/5 rounded-2xl overflow-hidden border border-white/10 shadow-2xl group">
+                    <div className="relative aspect-square bg-krea-input-bg rounded-2xl overflow-hidden border border-krea-border shadow-2xl group">
                       {isGenerating ? (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/40 backdrop-blur-sm z-10">
-                          <Loader2 className="w-10 h-10 animate-spin text-white" />
-                          <p className="text-sm font-medium animate-pulse">Crafting your model...</p>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-krea-bg/40 backdrop-blur-sm z-10">
+                          <Loader2 className="w-10 h-10 animate-spin text-krea-text" />
+                          <p className="text-sm font-medium animate-pulse text-krea-text">Crafting your model...</p>
                         </div>
                       ) : null}
                       
@@ -546,7 +564,7 @@ Keep every detail identical. Only change the pose.`;
                     <motion.div 
                       key={img.id}
                       layoutId={img.id}
-                      className="group relative aspect-square bg-white/5 rounded-xl overflow-hidden border border-white/10 cursor-pointer"
+                      className="group relative aspect-square bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
                       onClick={() => {
                         setCurrentImage(img);
                         setAttributes(img.attributes);

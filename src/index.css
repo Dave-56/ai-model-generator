@@ -6,32 +6,68 @@
   --font-display: "Space Grotesk", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
-  --color-krea-bg: #0a0a0a;
-  --color-krea-sidebar: #121212;
-  --color-krea-card: #1a1a1a;
-  --color-krea-accent: #ffffff;
-  --color-krea-muted: #888888;
-  --color-krea-border: rgba(255, 255, 255, 0.1);
+  --color-krea-bg: var(--krea-bg);
+  --color-krea-sidebar: var(--krea-sidebar);
+  --color-krea-card: var(--krea-card);
+  --color-krea-accent: var(--krea-accent);
+  --color-krea-muted: var(--krea-muted);
+  --color-krea-border: var(--krea-border);
+  --color-krea-text: var(--krea-text);
+  --color-krea-input-bg: var(--krea-input-bg);
+  --color-krea-btn-bg: var(--krea-btn-bg);
+  --color-krea-btn-text: var(--krea-btn-text);
+  --color-krea-btn-sec-bg: var(--krea-btn-sec-bg);
+  --color-krea-btn-sec-text: var(--krea-btn-sec-text);
+}
+
+:root {
+  --krea-bg: #f5f5f5;
+  --krea-sidebar: #ffffff;
+  --krea-card: #ffffff;
+  --krea-accent: #000000;
+  --krea-muted: #666666;
+  --krea-border: rgba(0, 0, 0, 0.1);
+  --krea-text: #000000;
+  --krea-input-bg: #ffffff;
+  --krea-btn-bg: #000000;
+  --krea-btn-text: #ffffff;
+  --krea-btn-sec-bg: rgba(0, 0, 0, 0.05);
+  --krea-btn-sec-text: #000000;
+}
+
+.dark {
+  --krea-bg: #0a0a0a;
+  --krea-sidebar: #121212;
+  --krea-card: #1a1a1a;
+  --krea-accent: #ffffff;
+  --krea-muted: #888888;
+  --krea-border: rgba(255, 255, 255, 0.1);
+  --krea-text: #ffffff;
+  --krea-input-bg: rgba(255, 255, 255, 0.05);
+  --krea-btn-bg: #ffffff;
+  --krea-btn-text: #000000;
+  --krea-btn-sec-bg: rgba(255, 255, 255, 0.1);
+  --krea-btn-sec-text: #ffffff;
 }
 
 @layer base {
   body {
-    @apply bg-krea-bg text-white font-sans antialiased;
+    @apply bg-krea-bg text-krea-text font-sans antialiased transition-colors duration-300;
   }
 }
 
 .krea-glass {
-  @apply bg-white/5 backdrop-blur-xl border border-white/10;
+  @apply bg-krea-card/50 backdrop-blur-xl border border-krea-border;
 }
 
 .krea-input {
-  @apply bg-white/5 border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-white/30 transition-colors;
+  @apply bg-krea-input-bg border border-krea-border text-krea-text rounded-lg px-4 py-2 focus:outline-none focus:border-krea-accent/30 transition-colors;
 }
 
 .krea-button {
-  @apply bg-white text-black font-medium rounded-lg px-6 py-2 hover:bg-white/90 active:scale-95 transition-all disabled:opacity-50 disabled:pointer-events-none;
+  @apply bg-krea-btn-bg text-krea-btn-text font-medium rounded-lg px-6 py-2 hover:opacity-90 active:scale-95 transition-all disabled:opacity-50 disabled:pointer-events-none;
 }
 
 .krea-button-secondary {
-  @apply bg-white/10 text-white font-medium rounded-lg px-6 py-2 hover:bg-white/20 active:scale-95 transition-all;
+  @apply bg-krea-btn-sec-bg text-krea-btn-sec-text font-medium rounded-lg px-6 py-2 hover:opacity-80 active:scale-95 transition-all;
 }
