@@ -23,9 +23,9 @@ GARMENT FIDELITY (critical — do not alter):
 - Fabric must look the same (e.g. denim, knit, satin) as in the flat lay.
 
 STYLING (standard quality — keep consistent, no random styles):
-- If the flat lay shows only one garment (e.g. a top or a bottom), the rest of the outfit must be neutral and complementary: solid colors, no competing patterns, no invented logos or branding. Match the formality of the garment (e.g. casual top → casual bottom; do not pair a tee with formal trousers).
+- If the flat lay shows only ONE garment (e.g. a top only, or a bottom only): replace ONLY that garment from the flat lay. Keep all other clothing exactly as in the reference model image (e.g. keep the same shorts, same bottom, same top). Do not change, replace, or invent the model's shorts or other pieces that are not in the flat lay.
 - If the flat lay shows a full outfit (top and bottom), the model wears exactly those items; do not add or change other clothing.
-- Never invent patterns, logos, or text that are not in the flat lay. Non-garment clothing must be simple and must not distract from the product.
+- Never invent patterns, logos, or text that are not in the flat lay. Non-garment clothing must match the reference image and must not distract from the product.
 
 POSE & FRAMING:
 {{ANGLE_SNIPPET}}

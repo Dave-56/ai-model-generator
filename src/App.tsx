@@ -417,7 +417,7 @@ Keep every detail identical. Only change the pose/angle.`;
         const response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-image-preview',
           contents: { parts },
-          config: { imageConfig: { aspectRatio: "1:1", imageSize: "1K" } },
+          config: { imageConfig: { aspectRatio: "1:1", imageSize: "2K" } },
         });
 
         let imageUrl = '';
@@ -585,7 +585,7 @@ Keep every detail identical. Only change the pose/angle.`;
               { text: prompt },
             ],
           },
-          config: { imageConfig: { aspectRatio: '1:1', imageSize: '1K' } },
+          config: { imageConfig: { aspectRatio: '1:1', imageSize: '2K' } },
         });
         let imageUrl = '';
         for (const part of response.candidates?.[0]?.content?.parts || []) {

@@ -51,14 +51,15 @@ describe('generateGarmentFidelityPrompt', () => {
     expect(prompt).toContain('barefoot');
   });
 
-  it('includes fixed styling constraints (neutral/complementary, formality, no invented branding)', () => {
+  it('includes fixed styling constraints (single garment keeps reference outfit, no invented branding)', () => {
     const angle = ANGLE_PRESETS[0];
     const style = PDP_STYLE_PRESETS[0];
     const prompt = generateGarmentFidelityPrompt(angle, style);
     expect(prompt).toContain('STYLING');
-    expect(prompt).toContain('neutral and complementary');
-    expect(prompt).toContain('Match the formality');
-    expect(prompt).toContain('no invented logos');
+    expect(prompt).toContain('replace ONLY that garment');
+    expect(prompt).toContain('Keep all other clothing exactly as in the reference model image');
+    expect(prompt).toContain("model's shorts");
+    expect(prompt).toContain('Never invent patterns, logos, or text');
     expect(prompt).toContain('full outfit');
   });
 });
