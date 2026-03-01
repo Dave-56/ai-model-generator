@@ -40,4 +40,4 @@ export interface GeneratedImage {
   skuName?: string;
 }
 
-export type ViewMode = 'builder' | 'gallery';
+export type ViewMode = 'builder' | 'gallery' | 'outfit-gallery';

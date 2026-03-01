@@ -624,7 +624,7 @@ Keep every detail identical. Only change the pose/angle.`;
         setGeneratedImages(prev => [newImage, ...prev]);
         setCurrentImage(newImage);
       }
-      setViewMode('gallery');
+      setViewMode('outfit-gallery');
     } catch (err: any) {
       console.error('Dress from flat lay error:', err);
       setDressModelError(err?.message || 'Failed to generate. Try again.');
@@ -986,8 +986,9 @@ Keep every detail identical. Only change the pose/angle.`;
           ) : (
           /* Dress model tab */
           (() => {
+            const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
             const byBatch = new Map<string, GeneratedImage[]>();
-            for (const img of generatedImages) {
+            for (const img of modelOnly) {
               const bid = img.batchId ?? img.id;
               if (!byBatch.has(bid)) byBatch.set(bid, []);
               byBatch.get(bid)!.push(img);
@@ -996,7 +997,7 @@ Keep every detail identical. Only change the pose/angle.`;
               batchId,
               images: imgs.sort((a, b) => a.timestamp - b.timestamp),
             }));
-            const defaultBatchId = currentImage ? (currentImage.batchId ?? currentImage.id) : (generatedImages[0] ? (generatedImages[0].batchId ?? generatedImages[0].id) : null);
+            const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay' ? (currentImage.batchId ?? currentImage.id) : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
             const effectiveDressBatchId = selectedDressBatchId ?? defaultBatchId;
             const selectedBatch = batches.find(b => b.batchId === effectiveDressBatchId);
             const anglePresetsList = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
@@ -1100,7 +1101,21 @@ Keep every detail identical. Only change the pose/angle.`;
               onClick={() => setViewMode('gallery')}
               className={`text-sm font-medium transition-colors ${viewMode === 'gallery' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
             >
-              Models ({new Set(generatedImages.map(img => img.batchId ?? img.id)).size})
+              Models ({(() => {
+                const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
+                return new Set(modelOnly.map(img => img.batchId ?? img.id)).size;
+              })()})
+            </button>
+            <button 
+              onClick={() => setViewMode('outfit-gallery')}
+              className={`text-sm font-medium transition-colors ${viewMode === 'outfit-gallery' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
+            >
+              Outfits ({(() => {
+                const flatLayBatches = new Set(
+                  generatedImages.filter(img => img.sourceType === 'flat_lay').map(img => img.batchId ?? img.id)
+                );
+                return flatLayBatches.size;
+              })()})
             </button>
             <button 
               onClick={() => setViewMode('builder')}
@@ -1117,16 +1132,32 @@ Keep every detail identical. Only change the pose/angle.`;
             >
               {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
             </button>
-            {viewMode === 'gallery' && generatedImages.length > 0 && (
+            {viewMode === 'gallery' && generatedImages.some(img => img.sourceType !== 'flat_lay') && (
               <button 
                 onClick={() => {
-                  if (confirm('Clear all generated models?')) {
-                    setGeneratedImages([]);
-                    setCurrentImage(null);
+                  if (confirm('Clear all models? This cannot be undone.')) {
+                    setGeneratedImages(prev => prev.filter(img => img.sourceType === 'flat_lay'));
+                    if (currentImage && currentImage.sourceType !== 'flat_lay') setCurrentImage(null);
+                    setGalleryBatchIndex({});
                   }
                 }}
                 className="p-2 text-krea-muted hover:text-red-400 transition-colors"
-                title="Clear models"
+                title="Clear all models"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            )}
+            {viewMode === 'outfit-gallery' && generatedImages.some(img => img.sourceType === 'flat_lay') && (
+              <button 
+                onClick={() => {
+                  if (confirm('Clear all outfits? This cannot be undone.')) {
+                    setGeneratedImages(prev => prev.filter(img => img.sourceType !== 'flat_lay'));
+                    if (currentImage?.sourceType === 'flat_lay') setCurrentImage(null);
+                    setGalleryBatchIndex({});
+                  }
+                }}
+                className="p-2 text-krea-muted hover:text-red-400 transition-colors"
+                title="Clear all outfits"
               >
                 <Trash2 className="w-5 h-5" />
               </button>
@@ -1270,6 +1301,124 @@ Keep every detail identical. Only change the pose/angle.`;
                   </div>
                 )}
               </motion.div>
+            ) : viewMode === 'outfit-gallery' ? (
+              <motion.div 
+                key="outfit-gallery"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"
+              >
+                {(() => {
+                  const flatLayImages = generatedImages.filter(img => img.sourceType === 'flat_lay');
+                  const byBatch = new Map<string, GeneratedImage[]>();
+                  for (const img of flatLayImages) {
+                    const bid = img.batchId ?? img.id;
+                    if (!byBatch.has(bid)) byBatch.set(bid, []);
+                    byBatch.get(bid)!.push(img);
+                  }
+                  const batches = Array.from(byBatch.entries()).map(([batchId, imgs]) => ({
+                    batchId,
+                    images: imgs.sort((a, b) => a.timestamp - b.timestamp),
+                  }));
+                  if (batches.length === 0) {
+                    return (
+                      <div className="col-span-full py-20 text-center space-y-4">
+                        <History className="w-12 h-12 text-krea-muted mx-auto" />
+                        <p className="text-krea-muted">No outfits yet. Use Dress model to generate model-in-outfit shots from a flat lay.</p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <>
+                      <div className="col-span-full mb-4 flex items-center justify-between">
+                        <p className="text-xs text-krea-muted">Showing {batches.length} outfit{batches.length !== 1 ? 's' : ''}.</p>
+                        <button 
+                          onClick={() => {
+                            if (confirm('Clear all outfits? This cannot be undone.')) {
+                              setGeneratedImages(prev => prev.filter(img => img.sourceType !== 'flat_lay'));
+                              if (currentImage?.sourceType === 'flat_lay') setCurrentImage(null);
+                              setGalleryBatchIndex({});
+                            }
+                          }}
+                          className="text-[10px] font-bold uppercase tracking-widest text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1.5"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Clear All
+                        </button>
+                      </div>
+                      {batches.map(({ batchId, images }) => {
+                        const idx = galleryBatchIndex[batchId] ?? 0;
+                        const currentImg = images[Math.min(idx, images.length - 1)];
+                        const hasMultiple = images.length > 1;
+                        return (
+                          <div key={batchId} className="space-y-2">
+                            <motion.div
+                              layoutId={`outfit-${batchId}`}
+                              className="group relative aspect-square bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
+                              onClick={() => {
+                                setCurrentImage(currentImg);
+                                if (currentImg.attributes) setAttributes(currentImg.attributes);
+                                setLightboxOpen(true);
+                              }}
+                            >
+                              <img
+                                src={currentImg.url}
+                                alt={currentImg.attributes?.name ?? 'Outfit'}
+                                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                                referrerPolicy="no-referrer"
+                              />
+                              {hasMultiple && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setGalleryBatchIndex(prev => ({ ...prev, [batchId]: (prev[batchId] ?? 0) - 1 })); }}
+                                    className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/50 hover:bg-black/70 flex items-center justify-center text-white transition-colors z-10 disabled:opacity-40"
+                                    disabled={idx <= 0}
+                                  >
+                                    <ChevronLeft className="w-5 h-5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setGalleryBatchIndex(prev => ({ ...prev, [batchId]: (prev[batchId] ?? 0) + 1 })); }}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/50 hover:bg-black/70 flex items-center justify-center text-white transition-colors z-10 disabled:opacity-40"
+                                    disabled={idx >= images.length - 1}
+                                  >
+                                    <ChevronRight className="w-5 h-5" />
+                                  </button>
+                                </>
+                              )}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end items-end">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (confirm('Delete this outfit and all its poses?')) {
+                                      setGeneratedImages(prev => prev.filter(img => (img.batchId ?? img.id) !== batchId));
+                                      if (currentImage && ((currentImage.batchId ?? currentImage.id) === batchId)) setCurrentImage(null);
+                                      setGalleryBatchIndex(prev => { const next = { ...prev }; delete next[batchId]; return next; });
+                                    }
+                                  }}
+                                  className="p-2 bg-white/10 hover:bg-red-500/50 rounded-lg transition-colors"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </motion.div>
+                            <div className="text-center">
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-krea-muted truncate mb-0.5">
+                                Flat lay{images[0]?.skuName ? ` · ${images[0].skuName}` : ''}
+                              </p>
+                              <p className="font-medium text-krea-text truncate">{currentImg.attributes?.name || 'Unnamed'}</p>
+                              <p className="text-sm text-krea-muted truncate">{currentImg.attributes?.ethnicity || '—'}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </>
+                  );
+                })()}
+              </motion.div>
             ) : (
               <motion.div 
                 key="gallery"
@@ -1278,47 +1427,48 @@ Keep every detail identical. Only change the pose/angle.`;
                 exit={{ opacity: 0, y: 20 }}
                 className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"
               >
-                {generatedImages.length === 0 ? (
-                  <div className="col-span-full py-20 text-center space-y-4">
-                    <History className="w-12 h-12 text-krea-muted mx-auto" />
-                    <p className="text-krea-muted">No models generated yet.</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="col-span-full mb-4 flex items-center justify-between">
-                      <p className="text-xs text-krea-muted">
-                        Showing {(() => {
-                          const batchIds = new Set(generatedImages.map(img => img.batchId ?? img.id));
-                          return batchIds.size;
-                        })()} models.
-                        {generatedImages.length > MAX_SAVED_MODELS && ` (Only the last ${MAX_SAVED_MODELS} are saved permanently)`}
-                      </p>
-                      <button 
-                        onClick={() => {
-                          if (confirm('Are you sure you want to clear all models? This cannot be undone.')) {
-                            setGeneratedImages([]);
-                            setCurrentImage(null);
-                            setGalleryBatchIndex({});
-                          }
-                        }}
-                        className="text-[10px] font-bold uppercase tracking-widest text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1.5"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                        Clear All
-                      </button>
-                    </div>
-                    {(() => {
-                      const byBatch = new Map<string, GeneratedImage[]>();
-                      for (const img of generatedImages) {
-                        const bid = img.batchId ?? img.id;
-                        if (!byBatch.has(bid)) byBatch.set(bid, []);
-                        byBatch.get(bid)!.push(img);
-                      }
-                      const batches = Array.from(byBatch.entries()).map(([batchId, imgs]) => ({
-                        batchId,
-                        images: imgs.sort((a, b) => a.timestamp - b.timestamp),
-                      }));
-                      return batches.map(({ batchId, images }) => {
+                {(() => {
+                  const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
+                  if (modelOnly.length === 0) {
+                    return (
+                      <div className="col-span-full py-20 text-center space-y-4">
+                        <History className="w-12 h-12 text-krea-muted mx-auto" />
+                        <p className="text-krea-muted">No models generated yet.</p>
+                      </div>
+                    );
+                  }
+                  const byBatch = new Map<string, GeneratedImage[]>();
+                  for (const img of modelOnly) {
+                    const bid = img.batchId ?? img.id;
+                    if (!byBatch.has(bid)) byBatch.set(bid, []);
+                    byBatch.get(bid)!.push(img);
+                  }
+                  const batches = Array.from(byBatch.entries()).map(([batchId, imgs]) => ({
+                    batchId,
+                    images: imgs.sort((a, b) => a.timestamp - b.timestamp),
+                  }));
+                  return (
+                    <>
+                      <div className="col-span-full mb-4 flex items-center justify-between">
+                        <p className="text-xs text-krea-muted">
+                          Showing {batches.length} model{batches.length !== 1 ? 's' : ''}.
+                          {generatedImages.length > MAX_SAVED_MODELS && ` (Only the last ${MAX_SAVED_MODELS} are saved permanently)`}
+                        </p>
+                        <button 
+                          onClick={() => {
+                            if (confirm('Are you sure you want to clear all models? This cannot be undone.')) {
+                              setGeneratedImages(prev => prev.filter(img => img.sourceType === 'flat_lay'));
+                              if (currentImage && currentImage.sourceType !== 'flat_lay') setCurrentImage(null);
+                              setGalleryBatchIndex({});
+                            }
+                          }}
+                          className="text-[10px] font-bold uppercase tracking-widest text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1.5"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Clear All
+                        </button>
+                      </div>
+                      {batches.map(({ batchId, images }) => {
                         const idx = galleryBatchIndex[batchId] ?? 0;
                         const currentImg = images[Math.min(idx, images.length - 1)];
                         const hasMultiple = images.length > 1;
@@ -1397,10 +1547,10 @@ Keep every detail identical. Only change the pose/angle.`;
                             </div>
                           </div>
                         );
-                      });
-                    })()}
-                </>
-                )}
+                      })}
+                    </>
+                  );
+                })()}
               </motion.div>
             )}
           </AnimatePresence>
