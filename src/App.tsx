@@ -261,6 +261,32 @@ export default function App() {
     }
   }, [theme]);
 
+  // Default builder to latest model's front pose when we have models but no selection
+  useEffect(() => {
+    if (viewMode !== 'builder' || currentImage !== null) return;
+    const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
+    if (modelOnly.length === 0) return;
+    const byBatch = new Map<string, GeneratedImage[]>();
+    for (const img of modelOnly) {
+      const bid = img.batchId ?? img.id;
+      if (!byBatch.has(bid)) byBatch.set(bid, []);
+      byBatch.get(bid)!.push(img);
+    }
+    const batches = Array.from(byBatch.entries()).map(([batchId, imgs]) => ({
+      batchId,
+      images: imgs.sort((a, b) => a.timestamp - b.timestamp),
+    }));
+    const latestBatch = batches.sort((a, b) => {
+      const aMax = Math.max(...a.images.map(i => i.timestamp));
+      const bMax = Math.max(...b.images.map(i => i.timestamp));
+      return bMax - aMax;
+    })[0];
+    if (!latestBatch || latestBatch.images.length === 0) return;
+    const frontPose = latestBatch.images.find(img => img.angleId === 'front') ?? latestBatch.images[0];
+    setCurrentImage(frontPose);
+    if (frontPose.attributes) setAttributes(frontPose.attributes);
+  }, [viewMode, generatedImages]);
+
   const updateAttribute = (key: keyof ModelAttributes, value: string) => {
     setAttributes(prev => ({ ...prev, [key]: value }));
     setValidationErrors(prev => prev.filter(err => !err.toLowerCase().includes(key.toLowerCase())));
@@ -1203,7 +1229,8 @@ Keep every detail identical. Only change the pose/angle.`;
                   </div>
                 ) : (
                   <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-12 items-stretch">
-                    {/* Image Preview */}
+                    {/* Image Preview + Pose gallery */}
+                    <div className="space-y-3">
                     <div className="relative aspect-square bg-krea-input-bg rounded-2xl overflow-hidden border border-krea-border shadow-2xl group min-h-0">
                       {isGeneratingModel ? (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-krea-bg/40 backdrop-blur-sm z-10">
@@ -1260,6 +1287,51 @@ Keep every detail identical. Only change the pose/angle.`;
                           <ImageIcon className="w-12 h-12 text-white/10" />
                         </div>
                       )}
+                    </div>
+                    {/* Pose gallery strip - same model, different angles */}
+                    {currentImage && currentImage.sourceType !== 'flat_lay' && (() => {
+                      const batchId = currentImage.batchId ?? currentImage.id;
+                      const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
+                      const batchImages = modelOnly
+                        .filter(img => (img.batchId ?? img.id) === batchId)
+                        .sort((a, b) => {
+                          const ai = ANGLE_PRESETS.findIndex(p => p.id === (a.angleId ?? ''));
+                          const bi = ANGLE_PRESETS.findIndex(p => p.id === (b.angleId ?? ''));
+                          if (ai >= 0 && bi >= 0) return ai - bi;
+                          return (a.angleId ?? '').localeCompare(b.angleId ?? '');
+                        });
+                      if (batchImages.length <= 1) return null;
+                      return (
+                        <div className="flex gap-2 overflow-x-auto pb-1">
+                          <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted self-center shrink-0 mr-1">Poses</p>
+                          {batchImages.map((img) => {
+                            const isActive = currentImage?.id === img.id;
+                            const angleLabel = ANGLE_PRESETS.find(p => p.id === img.angleId)?.label ?? img.angleId ?? 'Pose';
+                            return (
+                              <button
+                                key={img.id}
+                                type="button"
+                                onClick={() => {
+                                  setCurrentImage(img);
+                                  if (img.attributes) setAttributes(img.attributes);
+                                }}
+                                className={`shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+                                  isActive ? 'border-krea-text ring-2 ring-krea-text/20' : 'border-krea-border hover:border-krea-muted'
+                                }`}
+                                title={angleLabel}
+                              >
+                                <img
+                                  src={img.url}
+                                  alt={angleLabel}
+                                  className="w-full h-full object-cover"
+                                  referrerPolicy="no-referrer"
+                                />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                     </div>
 
                     {/* Details - same height as image, buttons at bottom */}
