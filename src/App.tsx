@@ -117,7 +117,7 @@ const ETHNICITY_PRESETS: Record<string, Record<string, Partial<ModelAttributes>>
   }
 };
 
-const MAX_SAVED_MODELS = 6; // Keep only the most recent 6 models to avoid localStorage quota limits
+const MAX_SAVED_MODELS = 50; // Blob URLs are small; only old base64 data could hit quota
 
 const Logo = ({ className = "w-5 h-5" }: { className?: string }) => (
   <svg viewBox="0 0 100 100" className={className} fill="currentColor">
@@ -206,12 +206,28 @@ export default function App() {
 
   useEffect(() => {
     try {
-      // Only save the most recent MAX_SAVED_MODELS to localStorage
-      const modelsToSave = generatedImages.slice(0, MAX_SAVED_MODELS);
-      localStorage.setItem('nanobanana_models', JSON.stringify(modelsToSave));
-    } catch (e) {
+      const toSave = generatedImages.slice(0, MAX_SAVED_MODELS);
+      localStorage.setItem('nanobanana_models', JSON.stringify(toSave));
+      setError((prev) => (prev?.includes('Gallery storage') ? null : prev));
+    } catch (e: any) {
       console.error("Error saving models to local storage:", e);
-      setError("Gallery storage is full. Some older models may not be saved.");
+      if (e?.name === 'QuotaExceededError') {
+        try {
+          // Free space: persist only Blob URLs (tiny); old base64 was filling quota
+          const blobOnly = generatedImages
+            .filter((img) => img.url.startsWith('http'))
+            .slice(0, MAX_SAVED_MODELS);
+          localStorage.setItem('nanobanana_models', JSON.stringify(blobOnly));
+          setError(null);
+        } catch {
+          try {
+            localStorage.removeItem('nanobanana_models');
+            setError(null);
+          } catch {
+            setError("Gallery storage is full. Clear site data for this app or use fewer saved models.");
+          }
+        }
+      }
     }
   }, [generatedImages]);
 
