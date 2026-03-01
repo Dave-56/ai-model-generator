@@ -1000,6 +1000,10 @@ Keep every detail identical. Only change the pose/angle.`;
                             <p className="text-sm">{currentImage?.attributes?.gender || attributes.gender}</p>
                           </div>
                           <div className="space-y-1">
+                            <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Ethnicity</p>
+                            <p className="text-sm">{currentImage?.attributes?.ethnicity || attributes.ethnicity}</p>
+                          </div>
+                          <div className="space-y-1">
                             <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Age Range</p>
                             <p className="text-sm">{currentImage?.attributes?.ageRange || attributes.ageRange}</p>
                           </div>
@@ -1126,29 +1130,21 @@ Keep every detail identical. Only change the pose/angle.`;
                                 </button>
                               </>
                             )}
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
-                              <div className="flex items-center justify-between">
-                                <div>
-                                  <p className="font-bold">{currentImg.attributes.name || 'Unnamed Model'}</p>
-                                  <p className="text-xs text-krea-muted">
-                                    {hasMultiple ? `${idx + 1} / ${images.length} poses` : new Date(currentImg.timestamp).toLocaleDateString()}
-                                  </p>
-                                </div>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (confirm('Delete this model and all its poses?')) {
-                                      setGeneratedImages(prev => prev.filter(img => (img.batchId ?? img.id) !== batchId));
-                                      if (currentImage && ((currentImage.batchId ?? currentImage.id) === batchId)) setCurrentImage(null);
-                                      setGalleryBatchIndex(prev => { const next = { ...prev }; delete next[batchId]; return next; });
-                                    }
-                                  }}
-                                  className="p-2 bg-white/10 hover:bg-red-500/50 rounded-lg transition-colors"
-                                  title="Delete"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end items-end">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm('Delete this model and all its poses?')) {
+                                    setGeneratedImages(prev => prev.filter(img => (img.batchId ?? img.id) !== batchId));
+                                    if (currentImage && ((currentImage.batchId ?? currentImage.id) === batchId)) setCurrentImage(null);
+                                    setGalleryBatchIndex(prev => { const next = { ...prev }; delete next[batchId]; return next; });
+                                  }
+                                }}
+                                className="p-2 bg-white/10 hover:bg-red-500/50 rounded-lg transition-colors"
+                                title="Delete"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </motion.div>
                         );
