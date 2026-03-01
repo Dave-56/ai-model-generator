@@ -9,6 +9,7 @@ import {
   Download, 
   Trash2, 
   ChevronRight, 
+  ChevronLeft,
   Loader2, 
   Image as ImageIcon,
   Camera,
@@ -16,10 +17,13 @@ import {
   Copy,
   Check,
   Sun,
-  Moon
+  Moon,
+  Maximize2,
+  X
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
-import { ModelAttributes, GeneratedImage, ViewMode } from './types';
+import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset } from './types';
+import { PDP_STYLE_PRESETS, ANGLE_PRESETS } from './pdpPresets';
 
 // Extend Window interface for AI Studio API key selection
 declare global {
@@ -129,6 +133,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('builder');
   const [attributes, setAttributes] = useState<ModelAttributes>(DEFAULT_ATTRIBUTES);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generatingProgress, setGeneratingProgress] = useState<{ current: number; total: number } | null>(null);
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>(() => {
     try {
       const saved = localStorage.getItem('nanobanana_models');
@@ -144,6 +149,60 @@ export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('light');
   const [isCustomizing, setIsCustomizing] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  /** Per-batch index for gallery carousel (which pose is shown in each card). */
+  const [galleryBatchIndex, setGalleryBatchIndex] = useState<Record<string, number>>({});
+
+  // Brand PDP style (separate from model). Default = first preset in each array.
+  const [activeTab, setActiveTab] = useState<'model' | 'brand-style'>('model');
+  const [selectedStyleId, setSelectedStyleId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('nanobanana_pdp_presets');
+      if (saved) {
+        const parsed = JSON.parse(saved) as { styleId?: string };
+        if (parsed.styleId && PDP_STYLE_PRESETS.some(p => p.id === parsed.styleId)) return parsed.styleId;
+      }
+    } catch (_) {}
+    return PDP_STYLE_PRESETS[0].id;
+  });
+  // Multiple angles per PDP (e.g. front, 3/4, back) — default all three.
+  const [selectedAngleIds, setSelectedAngleIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('nanobanana_pdp_presets');
+      if (saved) {
+        const parsed = JSON.parse(saved) as { angleId?: string; angleIds?: string[] };
+        if (Array.isArray(parsed.angleIds) && parsed.angleIds.length > 0) {
+          const valid = parsed.angleIds.filter((id: string) => ANGLE_PRESETS.some(p => p.id === id));
+          if (valid.length > 0) return valid;
+        }
+        if (parsed.angleId && ANGLE_PRESETS.some(p => p.id === parsed.angleId)) return [parsed.angleId];
+      }
+    } catch (_) {}
+    return ANGLE_PRESETS.map(p => p.id);
+  });
+
+  const [brandStyleSaveFeedback, setBrandStyleSaveFeedback] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleId: selectedStyleId, angleIds: selectedAngleIds }));
+    } catch (_) {}
+  }, [selectedStyleId, selectedAngleIds]);
+
+  const handleSaveBrandStyle = () => {
+    try {
+      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleId: selectedStyleId, angleIds: selectedAngleIds }));
+      setBrandStyleSaveFeedback(true);
+      window.setTimeout(() => setBrandStyleSaveFeedback(false), 2000);
+    } catch (_) {}
+  };
+
+  const toggleAngleId = (angleId: string) => {
+    setSelectedAngleIds(prev => {
+      const next = prev.includes(angleId) ? prev.filter(id => id !== angleId) : [...prev, angleId];
+      return next.length > 0 ? next : prev;
+    });
+  };
 
   useEffect(() => {
     try {
@@ -235,7 +294,7 @@ export default function App() {
     }
   };
 
-  const generatePrompt = (attrs: ModelAttributes) => {
+  const generatePrompt = (attrs: ModelAttributes, stylePreset: PdpStylePreset, anglePreset: AnglePreset) => {
     const namePart = attrs.name ? `Name: ${attrs.name}\n` : '';
     return `Generate a photorealistic fashion model portrait with these attributes:
 
@@ -248,10 +307,8 @@ Hair: ${attrs.hairStyle}, ${attrs.hairColor}
 Age range: ${attrs.ageRange}
 
 REQUIREMENTS:
-- Professional fashion editorial photography style
-- Background color: #FFFFFF (Pure white)
-- Soft, even studio lighting
-- Front-facing, neutral expression, confident posture
+- ${stylePreset.promptSnippet}
+- ${anglePreset.promptSnippet}
 - Full body portrait from head to toe
 - IMPORTANT: Must not crop head or feet. The entire body from head to toes must be visible.
 - Outfit: Black cropped top and tight form-fitting short shorts.
@@ -266,29 +323,17 @@ REQUIREMENTS:
       return;
     }
 
-    // Validation
     const errors: string[] = [];
-    if (!attributes.name.trim()) {
-      errors.push('Model Name is required');
-    }
-    
-    // Ensure all other required attributes are present
+    if (!attributes.name.trim()) errors.push('Model Name is required');
     const requiredFields = ['gender', 'ethnicity', 'skinTone', 'bodyBuild', 'height', 'hairStyle', 'hairColor', 'ageRange'];
     requiredFields.forEach(field => {
-      if (!attributes[field as keyof ModelAttributes]) {
-        errors.push(`${field.charAt(0).toUpperCase() + field.slice(1)} is required`);
-      }
+      if (!attributes[field as keyof ModelAttributes]) errors.push(`${field.charAt(0).toUpperCase() + field.slice(1)} is required`);
     });
-    
     if (errors.length > 0) {
       setValidationErrors(errors);
       setError("Please complete the model profile before generating.");
-      
-      // If any errors are in the customization section, expand it
       const customizationFields = ['skinTone', 'bodyBuild', 'height', 'hairStyle', 'hairColor'];
-      if (errors.some(err => customizationFields.some(field => err.toLowerCase().includes(field.toLowerCase())))) {
-        setIsCustomizing(true);
-      }
+      if (errors.some(err => customizationFields.some(field => err.toLowerCase().includes(field.toLowerCase())))) setIsCustomizing(true);
       return;
     }
 
@@ -296,65 +341,86 @@ REQUIREMENTS:
     setIsGenerating(true);
     setError(null);
 
+    const stylePreset = PDP_STYLE_PRESETS.find(p => p.id === selectedStyleId) ?? PDP_STYLE_PRESETS[0];
+    const anglePresetsOrdered = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
+    const anglePresetsList = anglePresetsOrdered.length > 0 ? anglePresetsOrdered : [ANGLE_PRESETS[0]];
+
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      let prompt = generatePrompt(attributes);
-      
-      const parts: any[] = [{ text: prompt }];
-      
-      // If using reference, add the current image as a reference
-      if (useReference && currentImage) {
-        prompt = `Generate the same person in this exact image, but now:
-- In a different pose (e.g. profile or walking)
+      const batchId = Math.random().toString(36).substring(7);
+      let workingAttributes = { ...attributes };
+      let firstGeneratedImage: GeneratedImage | null = null;
+
+      for (let i = 0; i < anglePresetsList.length; i++) {
+        const anglePreset = anglePresetsList[i];
+        setGeneratingProgress({ current: i + 1, total: anglePresetsList.length });
+
+        const isReference = firstGeneratedImage !== null;
+        let prompt: string;
+        const parts: any[] = [];
+
+        if (isReference && firstGeneratedImage) {
+          prompt = `Generate the same person in this exact image, but now:
+- ${anglePreset.promptSnippet}
 - Same lighting, same background
 - Same face, same body, same hair
 
-Keep every detail identical. Only change the pose.`;
-        
-        // Extract base64 from data URL
-        const base64Data = currentImage.url.split(',')[1];
-        parts.unshift({
-          inlineData: {
-            data: base64Data,
-            mimeType: 'image/png'
-          }
+Keep every detail identical. Only change the pose/angle.`;
+          const base64Data = firstGeneratedImage.url.split(',')[1];
+          parts.push({ inlineData: { data: base64Data, mimeType: 'image/png' } }, { text: prompt });
+        } else {
+          prompt = generatePrompt(attributes, stylePreset, anglePreset);
+          parts.push({ text: prompt });
+        }
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-image-preview',
+          contents: { parts },
+          config: { imageConfig: { aspectRatio: "1:1", imageSize: "1K" } },
         });
-        parts[1].text = prompt; // Update text part
-      }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image-preview',
-        contents: {
-          parts: parts,
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: "1:1",
-            imageSize: "1K"
+        let imageUrl = '';
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+          if (part.inlineData) {
+            imageUrl = `data:image/png;base64,${part.inlineData.data}`;
+            break;
           }
         }
-      });
+        if (!imageUrl) throw new Error("No image data returned from model.");
 
-      let imageUrl = '';
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-          break;
+        let estimatedAgeRange = workingAttributes.ageRange;
+        if (!firstGeneratedImage) {
+          try {
+            const ageResponse = await ai.models.generateContent({
+              model: 'gemini-3.1-flash-image-preview',
+              contents: {
+                parts: [
+                  { inlineData: { data: imageUrl.split(',')[1], mimeType: 'image/png' } },
+                  { text: `Look at this fashion model image. What age range does this person appear to be? Reply with exactly one of these options, nothing else: 18–24, 25–34, 35–44, 45–54, 55+` },
+                ],
+              },
+            });
+            const ageText = (ageResponse.candidates?.[0]?.content?.parts?.[0] as { text?: string })?.text?.trim() || '';
+            const match = OPTIONS.ageRanges.find(r => ageText.includes(r));
+            if (match) estimatedAgeRange = match;
+          } catch (_) {}
         }
-      }
+        workingAttributes = { ...workingAttributes, ageRange: estimatedAgeRange };
 
-      if (imageUrl) {
         const newImage: GeneratedImage = {
           id: Math.random().toString(36).substring(7),
           url: imageUrl,
-          attributes: { ...attributes },
+          attributes: workingAttributes,
           timestamp: Date.now(),
-          prompt: prompt
+          prompt,
+          styleId: stylePreset.id,
+          angleId: anglePreset.id,
+          batchId,
         };
+        if (!firstGeneratedImage) firstGeneratedImage = newImage;
+        setAttributes(workingAttributes);
         setGeneratedImages(prev => [newImage, ...prev]);
         setCurrentImage(newImage);
-      } else {
-        throw new Error("No image data returned from model.");
       }
     } catch (err: any) {
       console.error("Generation error:", err);
@@ -366,6 +432,7 @@ Keep every detail identical. Only change the pose.`;
       }
     } finally {
       setIsGenerating(false);
+      setGeneratingProgress(null);
     }
   };
 
@@ -431,15 +498,39 @@ Keep every detail identical. Only change the pose.`;
             </div>
             <h1 className="text-xl font-display font-bold tracking-tight">Nanobanana</h1>
           </div>
-          <button 
-            onClick={() => setAttributes(DEFAULT_ATTRIBUTES)}
-            className="p-2 text-krea-muted hover:text-white transition-colors"
-            title="Reset to Default"
+          {activeTab === 'model' && (
+            <button 
+              onClick={() => setAttributes(DEFAULT_ATTRIBUTES)}
+              className="p-2 text-krea-muted hover:text-white transition-colors"
+              title="Reset to Default"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Tab bar: Model | Brand style */}
+        <div className="flex border-b border-krea-border">
+          <button
+            onClick={() => setActiveTab('model')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${
+              activeTab === 'model' ? 'text-krea-text border-krea-text' : 'text-krea-muted border-transparent hover:text-krea-text'
+            }`}
           >
-            <RefreshCw className="w-4 h-4" />
+            Model
+          </button>
+          <button
+            onClick={() => setActiveTab('brand-style')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${
+              activeTab === 'brand-style' ? 'text-krea-text border-krea-text' : 'text-krea-muted border-transparent hover:text-krea-text'
+            }`}
+          >
+            Brand style
           </button>
         </div>
 
+          {activeTab === 'model' ? (
+          <>
           <div className="flex-1 overflow-y-auto p-6 space-y-8">
             <div className="space-y-4">
               <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Identity</label>
@@ -600,7 +691,7 @@ Keep every detail identical. Only change the pose.`;
           </div>
 
         <div className="p-6 border-t border-krea-border space-y-3">
-          {error && (
+          {error && activeTab === 'model' && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
               <div className="flex items-center gap-2 mb-1">
                 <div className="w-1 h-1 rounded-full bg-red-400" />
@@ -626,13 +717,70 @@ Keep every detail identical. Only change the pose.`;
             {isGenerating ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                Generating...
+                {generatingProgress ? `Generating ${generatingProgress.current}/${generatingProgress.total}...` : 'Generating...'}
               </>
             ) : (
-              "Generate Model"
+              selectedAngleIds.length > 1 ? `Generate model (${selectedAngleIds.length} angles)` : 'Generate Model'
             )}
           </motion.button>
         </div>
+          </>
+          ) : (
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="flex-1 overflow-y-auto p-6 space-y-8">
+              <div className="space-y-4">
+                <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Brand PDP Style</label>
+                <p className="text-xs text-krea-muted">Your workspace uses this look for all photoshoots. Save so every model you generate matches your brand.</p>
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-sm text-krea-muted">Style</label>
+                    <select
+                      value={selectedStyleId}
+                      onChange={(e) => setSelectedStyleId(e.target.value)}
+                      className="krea-input w-full appearance-none"
+                    >
+                      {PDP_STYLE_PRESETS.map((p) => (
+                        <option key={p.id} value={p.id}>{p.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-krea-muted">Angles (for each PDP)</label>
+                  <p className="text-[10px] text-krea-muted">Same model in these poses per SKU — e.g. front, 3/4, back.</p>
+                  <div className="space-y-2">
+                    {ANGLE_PRESETS.map((p) => (
+                      <label key={p.id} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedAngleIds.includes(p.id)}
+                          onChange={() => toggleAngleId(p.id)}
+                          className="rounded border-krea-border bg-krea-input-bg text-krea-accent focus:ring-krea-accent"
+                        />
+                        <span className="text-sm text-krea-text">{p.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                </div>
+              </div>
+            </div>
+            <div className="p-6 border-t border-krea-border">
+              <button
+                onClick={handleSaveBrandStyle}
+                className="krea-button w-full flex items-center justify-center gap-2 py-3"
+              >
+                {brandStyleSaveFeedback ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    Saved
+                  </>
+                ) : (
+                  'Save brand style'
+                )}
+              </button>
+            </div>
+          </div>
+          )}
       </aside>
 
       {/* Main Content */}
@@ -642,13 +790,13 @@ Keep every detail identical. Only change the pose.`;
           <div className="flex gap-6">
             <button 
               onClick={() => setViewMode('builder')}
-              className={`text-sm font-medium transition-colors ${viewMode === 'builder' ? 'text-white' : 'text-krea-muted hover:text-white'}`}
+              className={`text-sm font-medium transition-colors ${viewMode === 'builder' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
             >
               Builder
             </button>
             <button 
               onClick={() => setViewMode('gallery')}
-              className={`text-sm font-medium transition-colors ${viewMode === 'gallery' ? 'text-white' : 'text-krea-muted hover:text-white'}`}
+              className={`text-sm font-medium transition-colors ${viewMode === 'gallery' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
             >
               Gallery ({generatedImages.length})
             </button>
@@ -706,9 +854,9 @@ Keep every detail identical. Only change the pose.`;
                     </div>
                   </div>
                 ) : (
-                  <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-12 items-start">
+                  <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-12 items-stretch">
                     {/* Image Preview */}
-                    <div className="relative aspect-square bg-krea-input-bg rounded-2xl overflow-hidden border border-krea-border shadow-2xl group">
+                    <div className="relative aspect-square bg-krea-input-bg rounded-2xl overflow-hidden border border-krea-border shadow-2xl group min-h-0">
                       {isGenerating ? (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-krea-bg/40 backdrop-blur-sm z-10">
                           <Loader2 className="w-10 h-10 animate-spin text-krea-text" />
@@ -725,6 +873,16 @@ Keep every detail identical. Only change the pose.`;
                             referrerPolicy="no-referrer"
                           />
                           <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setLightboxOpen(true);
+                              }}
+                              className="p-2 bg-black/50 backdrop-blur-md rounded-lg hover:bg-black/70 transition-colors"
+                              title="Expand"
+                            >
+                              <Maximize2 className="w-4 h-4" />
+                            </button>
                             <button 
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -756,45 +914,37 @@ Keep every detail identical. Only change the pose.`;
                       )}
                     </div>
 
-                    {/* Details */}
-                    <div className="space-y-8">
-                      <div className="space-y-2">
-                        <h2 className="text-3xl font-display font-bold">
-                          {(currentImage?.attributes?.name || attributes.name) || 'Unnamed Model'}
-                        </h2>
-                        <p className="text-krea-muted">Base Model Profile</p>
+                    {/* Details - same height as image, buttons at bottom */}
+                    <div className="flex flex-col min-h-0">
+                      <div className="flex-1 flex flex-col gap-8 md:gap-10">
+                        <div className="space-y-1">
+                          <h2 className="text-3xl font-display font-bold">
+                            {(currentImage?.attributes?.name || attributes.name) || 'Unnamed Model'}
+                          </h2>
+                          <p className="text-krea-muted">Base Model Profile</p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-8">
+                          <div className="space-y-1">
+                            <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Gender</p>
+                            <p className="text-sm">{currentImage?.attributes?.gender || attributes.gender}</p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Age Range</p>
+                            <p className="text-sm">{currentImage?.attributes?.ageRange || attributes.ageRange}</p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Skin Tone</p>
+                            <p className="text-sm">{currentImage?.attributes?.skinTone || attributes.skinTone}</p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Height</p>
+                            <p className="text-sm">{currentImage?.attributes?.height || attributes.height}</p>
+                          </div>
+                        </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-6">
-                        <div className="space-y-1">
-                          <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Gender</p>
-                          <p className="text-sm">{currentImage?.attributes?.gender || attributes.gender}</p>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Age Range</p>
-                          <p className="text-sm">{currentImage?.attributes?.ageRange || attributes.ageRange}</p>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Skin Tone</p>
-                          <p className="text-sm">{currentImage?.attributes?.skinTone || attributes.skinTone}</p>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Height</p>
-                          <p className="text-sm">{currentImage?.attributes?.height || attributes.height}</p>
-                        </div>
-                      </div>
-
-                      <div className="p-4 bg-white/5 rounded-xl border border-white/10 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Consistency Reference</p>
-                          <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-                        </div>
-                        <p className="text-xs text-krea-muted leading-relaxed">
-                          This image is now saved as your base reference. Subsequent generations can use this model's features for perfect consistency.
-                        </p>
-                      </div>
-
-                      <div className="flex gap-3">
+                      <div className="flex gap-3 mt-auto pt-6">
                         <button 
                           onClick={() => handleGenerate(false)}
                           disabled={isGenerating}
@@ -833,7 +983,10 @@ Keep every detail identical. Only change the pose.`;
                   <>
                     <div className="col-span-full mb-4 flex items-center justify-between">
                       <p className="text-xs text-krea-muted">
-                        Showing {generatedImages.length} models. 
+                        Showing {(() => {
+                          const batchIds = new Set(generatedImages.map(img => img.batchId ?? img.id));
+                          return batchIds.size;
+                        })()} models.
                         {generatedImages.length > MAX_SAVED_MODELS && ` (Only the last ${MAX_SAVED_MODELS} are saved permanently)`}
                       </p>
                       <button 
@@ -841,6 +994,7 @@ Keep every detail identical. Only change the pose.`;
                           if (confirm('Are you sure you want to clear all models? This cannot be undone.')) {
                             setGeneratedImages([]);
                             setCurrentImage(null);
+                            setGalleryBatchIndex({});
                           }
                         }}
                         className="text-[10px] font-bold uppercase tracking-widest text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1.5"
@@ -849,45 +1003,92 @@ Keep every detail identical. Only change the pose.`;
                         Clear All
                       </button>
                     </div>
-                    {generatedImages.map((img) => (
-                    <motion.div 
-                      key={img.id}
-                      layoutId={img.id}
-                      className="group relative aspect-square bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
-                      onClick={() => {
-                        setCurrentImage(img);
-                        if (img.attributes) {
-                          setAttributes(img.attributes);
-                        }
-                        setViewMode('builder');
-                      }}
-                    >
-                      <img 
-                        src={img.url} 
-                        alt={img.attributes.name} 
-                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-                        referrerPolicy="no-referrer"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <p className="font-bold">{img.attributes.name || 'Unnamed Model'}</p>
-                            <p className="text-xs text-krea-muted">{new Date(img.timestamp).toLocaleDateString()}</p>
-                          </div>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDelete(img.id);
+                    {(() => {
+                      const byBatch = new Map<string, GeneratedImage[]>();
+                      for (const img of generatedImages) {
+                        const bid = img.batchId ?? img.id;
+                        if (!byBatch.has(bid)) byBatch.set(bid, []);
+                        byBatch.get(bid)!.push(img);
+                      }
+                      const batches = Array.from(byBatch.entries()).map(([batchId, imgs]) => ({
+                        batchId,
+                        images: imgs.sort((a, b) => a.timestamp - b.timestamp),
+                      }));
+                      return batches.map(({ batchId, images }) => {
+                        const idx = galleryBatchIndex[batchId] ?? 0;
+                        const currentImg = images[Math.min(idx, images.length - 1)];
+                        const hasMultiple = images.length > 1;
+                        return (
+                          <motion.div
+                            key={batchId}
+                            layoutId={batchId}
+                            className="group relative aspect-square bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
+                            onClick={() => {
+                              setCurrentImage(currentImg);
+                              if (currentImg.attributes) setAttributes(currentImg.attributes);
+                              setViewMode('builder');
                             }}
-                            className="p-2 bg-white/10 hover:bg-red-500/50 rounded-lg transition-colors"
-                            title="Delete"
                           >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </motion.div>
-                  ))}
+                            <img
+                              src={currentImg.url}
+                              alt={currentImg.attributes.name}
+                              className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                              referrerPolicy="no-referrer"
+                            />
+                            {hasMultiple && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setGalleryBatchIndex(prev => ({ ...prev, [batchId]: (prev[batchId] ?? 0) - 1 }));
+                                  }}
+                                  className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/50 hover:bg-black/70 flex items-center justify-center text-white transition-colors z-10 disabled:opacity-40"
+                                  disabled={idx <= 0}
+                                >
+                                  <ChevronLeft className="w-5 h-5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setGalleryBatchIndex(prev => ({ ...prev, [batchId]: (prev[batchId] ?? 0) + 1 }));
+                                  }}
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/50 hover:bg-black/70 flex items-center justify-center text-white transition-colors z-10 disabled:opacity-40"
+                                  disabled={idx >= images.length - 1}
+                                >
+                                  <ChevronRight className="w-5 h-5" />
+                                </button>
+                              </>
+                            )}
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="font-bold">{currentImg.attributes.name || 'Unnamed Model'}</p>
+                                  <p className="text-xs text-krea-muted">
+                                    {hasMultiple ? `${idx + 1} / ${images.length} poses` : new Date(currentImg.timestamp).toLocaleDateString()}
+                                  </p>
+                                </div>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (confirm('Delete this model and all its poses?')) {
+                                      setGeneratedImages(prev => prev.filter(img => (img.batchId ?? img.id) !== batchId));
+                                      if (currentImage && ((currentImage.batchId ?? currentImage.id) === batchId)) setCurrentImage(null);
+                                      setGalleryBatchIndex(prev => { const next = { ...prev }; delete next[batchId]; return next; });
+                                    }
+                                  }}
+                                  className="p-2 bg-white/10 hover:bg-red-500/50 rounded-lg transition-colors"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                          </motion.div>
+                        );
+                      });
+                    })()}
                 </>
                 )}
               </motion.div>
@@ -895,6 +1096,37 @@ Keep every detail identical. Only change the pose.`;
           </AnimatePresence>
         </div>
       </main>
+
+      {/* Image lightbox */}
+      <AnimatePresence>
+        {lightboxOpen && currentImage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+            onClick={() => setLightboxOpen(false)}
+          >
+            <button
+              onClick={() => setLightboxOpen(false)}
+              className="absolute top-4 right-4 p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors z-10"
+              title="Close"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            <motion.img
+              initial={{ scale: 0.95 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.95 }}
+              src={currentImage.url}
+              alt="Generated Model"
+              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+              referrerPolicy="no-referrer"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
