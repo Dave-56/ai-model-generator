@@ -50,4 +50,15 @@ describe('generateGarmentFidelityPrompt', () => {
     expect(prompt).toContain('logos');
     expect(prompt).toContain('barefoot');
   });
+
+  it('includes fixed styling constraints (neutral/complementary, formality, no invented branding)', () => {
+    const angle = ANGLE_PRESETS[0];
+    const style = PDP_STYLE_PRESETS[0];
+    const prompt = generateGarmentFidelityPrompt(angle, style);
+    expect(prompt).toContain('STYLING');
+    expect(prompt).toContain('neutral and complementary');
+    expect(prompt).toContain('Match the formality');
+    expect(prompt).toContain('no invented logos');
+    expect(prompt).toContain('full outfit');
+  });
 });
