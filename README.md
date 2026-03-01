@@ -12,9 +12,9 @@ View your app in AI Studio: https://ai.studio/apps/32327be8-40a6-4a30-adf5-b4348
 
 **Prerequisites:**  Node.js
 
-
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
-   `npm run dev`
+   - **`npm run dev`** — Vite only; images stay as data URLs and are not uploaded. You may see `POST /api/upload-image 404` in the console; that’s expected.
+   - **`vercel dev`** — Runs Vite + Vercel API routes so `/api/upload-image` works and images get persistent blob URLs (and can be saved to the gallery across reloads).

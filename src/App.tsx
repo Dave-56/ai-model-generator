@@ -23,8 +23,10 @@ import {
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset } from './types';
 import { PDP_STYLE_PRESETS, ANGLE_PRESETS } from './pdpPresets';
-import { generateGarmentFidelityPrompt } from './garmentFidelityPrompt';
+import { buildPromptFromSpec } from './garmentFidelityPrompt';
 import { normalizeReferenceImage } from './normalizeReferenceImage';
+import { extractGarmentSpec } from './garmentSpec';
+import { cropToTargetAspectRatio } from './deterministicCrop';
 
 // Extend Window interface for AI Studio API key selection
 declare global {
@@ -157,8 +159,9 @@ export default function App() {
 
   // Brand PDP style (separate from model). Multi-select; used for fashion PDP photoshoots.
   const [activeTab, setActiveTab] = useState<'model' | 'brand-style' | 'dress-model'>('model');
-  // Dress model (flat lay) flow: one flat lay image, optional SKU, selected batch.
-  const [flatLayDataUrl, setFlatLayDataUrl] = useState<string | null>(null);
+  // Dress model (flat lay) flow: front flat lay (required) + optional back flat lay.
+  const [flatLayFrontDataUrl, setFlatLayFrontDataUrl] = useState<string | null>(null);
+  const [flatLayBackDataUrl, setFlatLayBackDataUrl] = useState<string | null>(null);
   const [dressModelSkuName, setDressModelSkuName] = useState('');
   const [selectedDressBatchId, setSelectedDressBatchId] = useState<string | null>(null);
   const [dressModelError, setDressModelError] = useState<string | null>(null);
@@ -224,26 +227,20 @@ export default function App() {
 
   useEffect(() => {
     try {
-      const toSave = generatedImages.slice(0, MAX_SAVED_MODELS);
+      // Only persist images with http(s) URLs to avoid QuotaExceededError (base64 data URLs are huge)
+      const toSave = generatedImages
+        .filter((img) => img.url.startsWith('http'))
+        .slice(0, MAX_SAVED_MODELS);
       localStorage.setItem('nanobanana_models', JSON.stringify(toSave));
       setError((prev) => (prev?.includes('Gallery storage') ? null : prev));
     } catch (e: any) {
       console.error("Error saving models to local storage:", e);
       if (e?.name === 'QuotaExceededError') {
         try {
-          // Free space: persist only Blob URLs (tiny); old base64 was filling quota
-          const blobOnly = generatedImages
-            .filter((img) => img.url.startsWith('http'))
-            .slice(0, MAX_SAVED_MODELS);
-          localStorage.setItem('nanobanana_models', JSON.stringify(blobOnly));
+          localStorage.removeItem('nanobanana_models');
           setError(null);
         } catch {
-          try {
-            localStorage.removeItem('nanobanana_models');
-            setError(null);
-          } catch {
-            setError("Gallery storage is full. Clear site data for this app or use fewer saved models.");
-          }
+          setError("Gallery storage is full. Clear site data for this app or use fewer saved models.");
         }
       }
     }
@@ -261,9 +258,10 @@ export default function App() {
     }
   }, [theme]);
 
-  // Default builder to latest model's front pose when we have models but no selection
+  // Default builder to latest model's front pose when we have no selection or current image is an outfit
   useEffect(() => {
-    if (viewMode !== 'builder' || currentImage !== null) return;
+    if (viewMode !== 'builder') return;
+    if (currentImage !== null && currentImage.sourceType !== 'flat_lay') return;
     const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
     if (modelOnly.length === 0) return;
     const byBatch = new Map<string, GeneratedImage[]>();
@@ -371,6 +369,7 @@ REQUIREMENTS:
 - ${anglePreset.promptSnippet}
 - Full body portrait from head to toe
 - IMPORTANT: Must not crop head or feet. The entire body from head to toes must be visible.
+- 2:3 portrait framing. Center the model with even margins on all sides.
 - OUTFIT (locked — use this exact description every time, no variation): Black short-sleeve fitted crop top ending at midriff. Black high-waist short shorts (hotpants length, upper thigh only). Same garment style for all models.
 - Footwear: Model must be BAREFOOT. No shoes, no heels, no sandals, no footwear of any kind.
 - High resolution, sharp details
@@ -407,115 +406,156 @@ REQUIREMENTS:
     setIsGeneratingModel(true);
     setError(null);
 
-    const firstStyleId = selectedStyleIds[0] ?? PDP_STYLE_PRESETS[0].id;
-    const stylePreset = PDP_STYLE_PRESETS.find(p => p.id === firstStyleId) ?? PDP_STYLE_PRESETS[0];
+    const stylePresets = selectedStyleIds
+      .map(id => PDP_STYLE_PRESETS.find(p => p.id === id))
+      .filter((p): p is PdpStylePreset => !!p);
+    if (stylePresets.length === 0) stylePresets.push(PDP_STYLE_PRESETS[0]);
     const anglePresetsOrdered = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
     const anglePresetsList = anglePresetsOrdered.length > 0 ? anglePresetsOrdered : [ANGLE_PRESETS[0]];
+    const totalImages = anglePresetsList.length * stylePresets.length;
 
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const batchId = Math.random().toString(36).substring(7);
       let workingAttributes = { ...attributes };
       let firstGeneratedImage: GeneratedImage | null = null;
+      let imageCount = 0;
 
-      for (let i = 0; i < anglePresetsList.length; i++) {
-        const anglePreset = anglePresetsList[i];
-        setGeneratingProgress({ current: i + 1, total: anglePresetsList.length });
+      // Angle-outer, style-inner: first style at each angle becomes the reference
+      // for subsequent styles at that same angle (avoids cross-style contamination).
+      for (let ai_idx = 0; ai_idx < anglePresetsList.length; ai_idx++) {
+        const anglePreset = anglePresetsList[ai_idx];
+        let angleRefImage: GeneratedImage | null = null;
 
-        const isReference = firstGeneratedImage !== null;
-        let prompt: string;
-        const parts: any[] = [];
+        for (let si = 0; si < stylePresets.length; si++) {
+          const stylePreset = stylePresets[si];
+          imageCount++;
+          setGeneratingProgress({ current: imageCount, total: totalImages });
 
-        if (isReference && firstGeneratedImage) {
-          prompt = `Generate the same person in this exact image, but now:
+          const isReference = firstGeneratedImage !== null;
+          let prompt: string;
+          const parts: any[] = [];
+
+          if (isReference && firstGeneratedImage) {
+            const refImage = angleRefImage ?? firstGeneratedImage;
+            prompt = `You are given a reference photo of a fashion model. Generate a NEW image of this EXACT same person.
+
+IDENTITY PRESERVATION (critical — do not alter):
+- Strictly preserve the model's identity from the reference image: same face, same facial features, same skin tone, same skin texture, same body proportions, same body physique, same hair length, same hair style, same hair color.
+- Do not change, age, or alter the person in any way. The output must be unmistakably the same individual.
+
+WHAT TO KEEP FROM THE REFERENCE IMAGE:
+- Face, facial expression, skin tone, skin texture
+- Body proportions, body physique, height
+- Hair length, hair style, hair color
+- Exact outfit: black short-sleeve fitted crop top ending at midriff, black high-waist short shorts (hotpants length). Do not change, add, or remove any clothing.
+- Barefoot. No shoes.
+
+WHAT TO CHANGE:
 - ${anglePreset.promptSnippet}
-- Same lighting, same background
-- Same face, same body, same hair
-- Same exact outfit (black crop top, black short shorts). Do not change clothing.
+- ${stylePreset.promptSnippet}
 
-Keep every detail identical. Only change the pose/angle.`;
-          const base64Data = firstGeneratedImage.url.split(',')[1];
-          parts.push({ inlineData: { data: base64Data, mimeType: 'image/png' } }, { text: prompt });
-        } else {
-          prompt = generatePrompt(attributes, stylePreset, anglePreset);
-          parts.push({ text: prompt });
-        }
+FRAMING:
+- Full body from head to toe. The entire body must be visible — do not crop the head or feet.
+- 2:3 portrait framing. Center the model with even margins on all sides.
+- High resolution, sharp details, photorealistic.
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-image-preview',
-          contents: { parts },
-          config: {
-            temperature: 0.4,
-            imageConfig: { aspectRatio: "1:1", imageSize: "512" },
-            thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-          },
-        });
-
-        let imageUrl = '';
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-          if (part.inlineData) {
-            imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-            break;
+The ONLY changes are pose/angle and background/lighting. Everything else must be identical to the reference.`;
+            const refBase64Raw = refImage.url.split(',')[1];
+            let refBase64Normalized: string;
+            try {
+              refBase64Normalized = await normalizeReferenceImage(refBase64Raw, 'image/png');
+            } catch (_) {
+              refBase64Normalized = refBase64Raw;
+            }
+            parts.push({ inlineData: { data: refBase64Normalized, mimeType: 'image/png' } }, { text: prompt });
+          } else {
+            prompt = generatePrompt(attributes, stylePreset, anglePreset);
+            parts.push({ text: prompt });
           }
-        }
-        if (!imageUrl) throw new Error("No image data returned from model.");
 
-        // Upload to Vercel Blob when deployed (saves localStorage space); fallback to data URL locally
-        let finalUrl = imageUrl;
-        try {
-          const base64 = imageUrl.split(',')[1];
-          if (base64) {
-            const uploadRes = await fetch('/api/upload-image', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ image: base64 }),
-            });
-            if (uploadRes.ok) {
-              const { url } = await uploadRes.json();
-              if (url) finalUrl = url;
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-image-preview',
+            contents: { parts },
+            config: {
+              temperature: 0.4,
+              imageConfig: { aspectRatio: "2:3", imageSize: "1K" },
+              thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+            },
+          });
+
+          let imageUrl = '';
+          for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) {
+              imageUrl = `data:image/png;base64,${part.inlineData.data}`;
+              break;
             }
           }
-        } catch (_) {
-          // Keep data URL if upload fails (e.g. local dev without Blob)
-        }
+          if (!imageUrl) throw new Error("No image data returned from model.");
 
-        let estimatedAgeRange = workingAttributes.ageRange;
-        if (!firstGeneratedImage) {
           try {
-            const ageResponse = await ai.models.generateContent({
-              model: 'gemini-3.1-flash-image-preview',
-              contents: {
-                parts: [
-                  { inlineData: { data: imageUrl.split(',')[1], mimeType: 'image/png' } },
-                  { text: `Look at this fashion model image. What age range does this person appear to be? Reply with exactly one of these options, nothing else: 18–24, 25–34, 35–44, 45–54, 55+` },
-                ],
-              },
-            });
-            const ageText = (ageResponse.candidates?.[0]?.content?.parts?.[0] as { text?: string })?.text?.trim() || '';
-            const match = OPTIONS.ageRanges.find(r => ageText.includes(r));
-            if (match) estimatedAgeRange = match;
-          } catch (_) {}
-        }
-        workingAttributes = { ...workingAttributes, ageRange: estimatedAgeRange };
+            imageUrl = await cropToTargetAspectRatio(imageUrl, 2 / 3);
+          } catch (_) {
+            // keep uncropped if crop fails
+          }
 
-        const newImage: GeneratedImage = {
-          id: Math.random().toString(36).substring(7),
-          url: finalUrl,
-          attributes: workingAttributes,
-          timestamp: Date.now(),
-          prompt,
-          styleId: stylePreset.id,
-          angleId: anglePreset.id,
-          batchId,
-        };
-        if (!firstGeneratedImage) firstGeneratedImage = newImage;
-        setAttributes(workingAttributes);
-        setGeneratedImages(prev => [newImage, ...prev]);
-        setCurrentImage(newImage);
+          let finalUrl = imageUrl;
+          const uploadAvailable = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location?.hostname ?? '');
+          if (uploadAvailable) {
+            try {
+              const base64 = imageUrl.split(',')[1];
+              if (base64) {
+                // Requires Vercel (deploy or `vercel dev`); 404 when using plain Vite dev — we keep data URL
+                const uploadRes = await fetch('/api/upload-image', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ image: base64 }),
+                });
+                if (uploadRes.ok) {
+                  const { url } = await uploadRes.json();
+                  if (url) finalUrl = url;
+                }
+              }
+            } catch (_) {}
+          }
+
+          let estimatedAgeRange = workingAttributes.ageRange;
+          if (!firstGeneratedImage) {
+            try {
+              const ageResponse = await ai.models.generateContent({
+                model: 'gemini-3.1-flash-image-preview',
+                contents: {
+                  parts: [
+                    { inlineData: { data: imageUrl.split(',')[1], mimeType: 'image/png' } },
+                    { text: `Look at this fashion model image. What age range does this person appear to be? Reply with exactly one of these options, nothing else: 18–24, 25–34, 35–44, 45–54, 55+` },
+                  ],
+                },
+              });
+              const ageText = (ageResponse.candidates?.[0]?.content?.parts?.[0] as { text?: string })?.text?.trim() || '';
+              const match = OPTIONS.ageRanges.find(r => ageText.includes(r));
+              if (match) estimatedAgeRange = match;
+            } catch (_) {}
+          }
+          workingAttributes = { ...workingAttributes, ageRange: estimatedAgeRange };
+
+          const newImage: GeneratedImage = {
+            id: Math.random().toString(36).substring(7),
+            url: finalUrl,
+            attributes: workingAttributes,
+            timestamp: Date.now(),
+            prompt,
+            styleId: stylePreset.id,
+            angleId: anglePreset.id,
+            batchId,
+          };
+          if (!firstGeneratedImage) firstGeneratedImage = newImage;
+          if (!angleRefImage) angleRefImage = newImage;
+          setAttributes(workingAttributes);
+          setGeneratedImages(prev => [newImage, ...prev]);
+          setCurrentImage(newImage);
+        }
       }
-      // After batch: show front-facing image first (first generated in angle order)
       if (firstGeneratedImage) setCurrentImage(firstGeneratedImage);
-      // Clear model name so the next model can be entered fresh
       setAttributes(prev => ({ ...prev, name: '' }));
     } catch (err: any) {
       console.error("Generation error:", err);
@@ -548,8 +588,8 @@ Keep every detail identical. Only change the pose/angle.`;
   };
 
   const handleDressFromFlatLay = async () => {
-    if (!hasApiKey || !flatLayDataUrl) {
-      setDressModelError('Upload a flat lay image.');
+    if (!hasApiKey || !flatLayFrontDataUrl) {
+      setDressModelError('Upload a front flat lay image.');
       return;
     }
     const byBatch = new Map<string, GeneratedImage[]>();
@@ -564,9 +604,6 @@ Keep every detail identical. Only change the pose/angle.`;
       setDressModelError('Select a model first. Generate a model in the Model tab.');
       return;
     }
-    const anglePresetsOrdered = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
-    const anglePresetsList = anglePresetsOrdered.length > 0 ? anglePresetsOrdered : [ANGLE_PRESETS[0]];
-    const stylePreset = PDP_STYLE_PRESETS.find(p => p.id === (selectedStyleIds[0] ?? PDP_STYLE_PRESETS[0].id)) ?? PDP_STYLE_PRESETS[0];
 
     const extractBase64 = async (img: GeneratedImage): Promise<string | null> => {
       if (img.url.startsWith('data:')) {
@@ -589,96 +626,160 @@ Keep every detail identical. Only change the pose/angle.`;
       return null;
     };
 
-    const fallbackRefBase64 = await extractBase64(batchImages[0]);
-    if (!fallbackRefBase64) {
+    const modelRefBase64 = await extractBase64(batchImages[0]);
+    if (!modelRefBase64) {
       setDressModelError('Selected model image must be available (try re-generating the model).');
       return;
     }
 
-    const flatLayMatch = flatLayDataUrl.match(/^data:([^;]+);base64,(.+)$/);
-    const flatLayBase64 = flatLayMatch?.[2] ?? null;
-    const flatLayMime = (flatLayMatch?.[1] ?? 'image/png').toLowerCase();
-    if (!flatLayBase64) {
-      setDressModelError('Invalid flat lay image.');
+    const flatLayFrontMatch = flatLayFrontDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    const flatLayFrontBase64 = flatLayFrontMatch?.[2] ?? null;
+    const flatLayFrontMime = (flatLayFrontMatch?.[1] ?? 'image/png').toLowerCase();
+    if (!flatLayFrontBase64) {
+      setDressModelError('Invalid front flat lay image.');
       return;
     }
+
     setDressModelError(null);
     setIsGeneratingOutfit(true);
     const batchId = Math.random().toString(36).substring(7);
     const skuName = dressModelSkuName.trim() || undefined;
+    const apiKey = process.env.GEMINI_API_KEY ?? '';
+    const stylePreset = selectedStyleIds.length > 0
+      ? PDP_STYLE_PRESETS.find(p => p.id === selectedStyleIds[0]) ?? PDP_STYLE_PRESETS[0]
+      : PDP_STYLE_PRESETS[0];
+    const styleSnippet = stylePreset.promptSnippet;
+    const refImage = batchImages[0];
+
+    const runId = Date.now().toString(36).slice(-6);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      for (let i = 0; i < anglePresetsList.length; i++) {
-        const anglePreset = anglePresetsList[i];
-        setGeneratingProgress({ current: i + 1, total: anglePresetsList.length });
+      console.log(`[flat-lay ${runId}] Starting: garment spec + 3 poses`);
 
-        const matchingRefImage = batchImages.find(img => img.angleId === anglePreset.id) ?? batchImages[0];
-        let refBase64 = await extractBase64(matchingRefImage);
-        if (!refBase64) refBase64 = fallbackRefBase64;
-        let normalizedRefBase64: string;
-        try {
-          normalizedRefBase64 = await normalizeReferenceImage(refBase64, 'image/png');
-        } catch (e) {
-          normalizedRefBase64 = await normalizeReferenceImage(fallbackRefBase64, 'image/png');
+      setGeneratingProgress({ current: 0, total: 4 });
+      const t0 = performance.now();
+      const spec = await extractGarmentSpec(flatLayFrontBase64, flatLayFrontMime, apiKey);
+      console.log(`[flat-lay ${runId}] Garment spec done in ${Math.round(performance.now() - t0)}ms`);
+
+      setGeneratingProgress({ current: 1, total: 4 });
+      let normalizedRefBase64: string;
+      const t1 = performance.now();
+      try {
+        normalizedRefBase64 = await normalizeReferenceImage(modelRefBase64, 'image/png');
+      } catch {
+        normalizedRefBase64 = modelRefBase64;
+      }
+      console.log(`[flat-lay ${runId}] Ref image normalize done in ${Math.round(performance.now() - t1)}ms`);
+
+      const ai = new GoogleGenAI({ apiKey });
+      const genConfig = {
+        temperature: 0.4,
+        imageConfig: { aspectRatio: '2:3' as const, imageSize: '1K' as const },
+      };
+      const chat = ai.chats.create({
+        model: 'gemini-3.1-flash-image-preview',
+        config: genConfig,
+      });
+
+      const flatLayMime = flatLayFrontMime === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+      const poses: Array<{ pose: 'front' | 'three-quarter' | 'back'; angleId: string }> = [
+        { pose: 'front', angleId: 'front' },
+        { pose: 'three-quarter', angleId: 'three-quarter' },
+        { pose: 'back', angleId: 'back' },
+      ];
+
+      function extractImageFromResponse(response: { candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string } }> } }> }): string {
+        for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+          if (part.inlineData?.data) {
+            return `data:image/png;base64,${part.inlineData.data}`;
+          }
         }
+        throw new Error('No image data returned from model.');
+      }
 
-        const prompt = generateGarmentFidelityPrompt(anglePreset, stylePreset);
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-image-preview',
-          contents: {
-            parts: [
-              { inlineData: { data: flatLayBase64, mimeType: flatLayMime === 'image/jpeg' ? 'image/jpeg' : 'image/png' } },
+      const newImages: GeneratedImage[] = [];
+
+      for (let i = 0; i < poses.length; i++) {
+        const { pose, angleId } = poses[i];
+        setGeneratingProgress({ current: i + 2, total: 4 });
+
+        const promptText = buildPromptFromSpec(spec, pose, styleSnippet);
+        const message = pose === 'front'
+          ? [
+              { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
               { inlineData: { data: normalizedRefBase64, mimeType: 'image/png' } },
-              { text: prompt },
-            ],
-          },
-          config: {
-            temperature: 0.4,
-            imageConfig: { aspectRatio: '1:1', imageSize: '512' },
-            thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-          },
+              { text: promptText },
+            ]
+          : [{ text: promptText }];
+
+        const poseLabel = `${pose} (${i + 1}/3)`;
+        console.log(`[flat-lay ${runId}] Pose ${poseLabel}: request start`);
+        const tPose = performance.now();
+        const response = await chat.sendMessage({
+          message,
+          config: genConfig,
         });
-        let imageUrl = '';
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-          if (part.inlineData) {
-            imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-            break;
+        const poseMs = Math.round(performance.now() - tPose);
+        const usage = (response as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } }).usageMetadata;
+        if (usage) {
+          console.log(`[flat-lay ${runId}] Pose ${poseLabel}: done in ${poseMs}ms | tokens: prompt=${usage.promptTokenCount ?? '?'} candidates=${usage.candidatesTokenCount ?? '?'} total=${usage.totalTokenCount ?? '?'}`);
+        } else {
+          console.log(`[flat-lay ${runId}] Pose ${poseLabel}: done in ${poseMs}ms`);
+        }
+
+        let imageUrl = extractImageFromResponse(response);
+        const tCrop = performance.now();
+        try {
+          imageUrl = await cropToTargetAspectRatio(imageUrl, 2 / 3);
+        } catch (_) {
+          // keep uncropped if crop fails
+        }
+        console.log(`[flat-lay ${runId}] Pose ${poseLabel}: crop in ${Math.round(performance.now() - tCrop)}ms`);
+
+        let finalUrl = imageUrl;
+        const tUpload = performance.now();
+        const uploadAvailable = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location?.hostname ?? '');
+        if (uploadAvailable) {
+          try {
+            const base64 = imageUrl.split(',')[1];
+            if (base64) {
+              const uploadRes = await fetch('/api/upload-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: base64 }),
+              });
+              if (uploadRes.ok) {
+                const { url } = await uploadRes.json();
+                if (url) finalUrl = url;
+              } else {
+                console.warn(`[flat-lay ${runId}] Pose ${poseLabel}: upload returned ${uploadRes.status}`);
+              }
+            }
+          } catch (e) {
+            console.warn(`[flat-lay ${runId}] Pose ${poseLabel}: upload failed`, e);
           }
         }
-        if (!imageUrl) throw new Error('No image data returned from model.');
-        let finalUrl = imageUrl;
-        try {
-          const base64 = imageUrl.split(',')[1];
-          if (base64) {
-            const uploadRes = await fetch('/api/upload-image', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ image: base64 }),
-            });
-            if (uploadRes.ok) {
-              const { url } = await uploadRes.json();
-              if (url) finalUrl = url;
-            }
-          }
-        } catch (_) {}
-        const newImage: GeneratedImage = {
+        console.log(`[flat-lay ${runId}] Pose ${poseLabel}: upload in ${Math.round(performance.now() - tUpload)}ms`);
+        newImages.push({
           id: Math.random().toString(36).substring(7),
           url: finalUrl,
-          attributes: matchingRefImage.attributes,
+          attributes: refImage.attributes,
           timestamp: Date.now(),
-          prompt,
+          prompt: promptText,
           styleId: stylePreset.id,
-          angleId: anglePreset.id,
+          angleId,
           batchId,
           sourceType: 'flat_lay',
           skuName,
-        };
-        setGeneratedImages(prev => [newImage, ...prev]);
-        setCurrentImage(newImage);
+        });
       }
+
+      setGeneratedImages(prev => [...newImages, ...prev]);
+      if (newImages.length > 0) setCurrentImage(newImages[newImages.length - 1]);
       setViewMode('outfit-gallery');
+      console.log(`[flat-lay ${runId}] Finished: ${newImages.length} images`);
     } catch (err: any) {
-      console.error('Dress from flat lay error:', err);
+      console.error(`[flat-lay ${runId}] Error:`, err?.message ?? err);
+      if (err?.response?.status) console.error(`[flat-lay ${runId}] Response status:`, err.response.status);
       setDressModelError(err?.message || 'Failed to generate. Try again.');
     } finally {
       setIsGeneratingOutfit(false);
@@ -965,7 +1066,12 @@ Keep every detail identical. Only change the pose/angle.`;
                 {generatingProgress ? `Generating ${generatingProgress.current}/${generatingProgress.total}...` : 'Generating...'}
               </>
             ) : (
-              selectedAngleIds.length > 1 ? `Generate model (${selectedAngleIds.length} angles)` : 'Generate Model'
+              (() => {
+                const numAngles = selectedAngleIds.length;
+                const numStyles = selectedStyleIds.length;
+                const total = numAngles * numStyles;
+                return total > 1 ? `Generate model (${total} images)` : 'Generate Model';
+              })()
             )}
           </motion.button>
         </div>
@@ -1052,40 +1158,88 @@ Keep every detail identical. Only change the pose/angle.`;
             const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay' ? (currentImage.batchId ?? currentImage.id) : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
             const effectiveDressBatchId = selectedDressBatchId ?? defaultBatchId;
             const selectedBatch = batches.find(b => b.batchId === effectiveDressBatchId);
-            const anglePresetsList = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
-            const numAngles = anglePresetsList.length > 0 ? anglePresetsList.length : ANGLE_PRESETS.length;
             return (
               <div className="flex-1 flex flex-col min-h-0">
                 <div className="flex-1 overflow-y-auto p-6 space-y-6">
                   <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Flat lay</label>
-                  <div className="space-y-2">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          const reader = new FileReader();
-                          reader.onload = () => setFlatLayDataUrl(reader.result as string);
-                          reader.readAsDataURL(file);
-                          setDressModelError(null);
-                        }
-                      }}
-                      className="krea-input w-full text-sm file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-krea-btn-sec-bg file:text-krea-text"
-                    />
-                    {flatLayDataUrl && (
-                      <div className="relative w-full aspect-square max-h-32 rounded-lg overflow-hidden border border-krea-border bg-krea-input-bg">
-                        <img src={flatLayDataUrl} alt="Flat lay" className="w-full h-full object-contain" />
-                        <button
-                          type="button"
-                          onClick={() => setFlatLayDataUrl(null)}
-                          className="absolute top-1 right-1 p-1 rounded bg-black/60 hover:bg-black/80 text-white"
-                          title="Remove"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Front flat lay (required) */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm text-krea-muted">Front</label>
+                        <span className="text-[10px] text-red-400 font-bold uppercase tracking-widest">Required</span>
                       </div>
-                    )}
+                      {flatLayFrontDataUrl ? (
+                        <div className="relative w-full aspect-square rounded-lg overflow-hidden border border-krea-border bg-krea-input-bg">
+                          <img src={flatLayFrontDataUrl} alt="Front flat lay" className="w-full h-full object-contain" />
+                          <button
+                            type="button"
+                            onClick={() => setFlatLayFrontDataUrl(null)}
+                            className="absolute top-1 right-1 p-1 rounded bg-black/60 hover:bg-black/80 text-white"
+                            title="Remove"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <label className="flex flex-col items-center justify-center w-full aspect-square rounded-lg border-2 border-dashed border-krea-border hover:border-krea-muted bg-krea-input-bg cursor-pointer transition-colors">
+                          <Plus className="w-5 h-5 text-krea-muted mb-1" />
+                          <span className="text-[10px] text-krea-muted">Upload</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const reader = new FileReader();
+                                reader.onload = () => setFlatLayFrontDataUrl(reader.result as string);
+                                reader.readAsDataURL(file);
+                                setDressModelError(null);
+                              }
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
+                    {/* Back flat lay (optional) */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm text-krea-muted">Back</label>
+                        <span className="text-[10px] text-krea-muted font-bold uppercase tracking-widest">Optional</span>
+                      </div>
+                      {flatLayBackDataUrl ? (
+                        <div className="relative w-full aspect-square rounded-lg overflow-hidden border border-krea-border bg-krea-input-bg">
+                          <img src={flatLayBackDataUrl} alt="Back flat lay" className="w-full h-full object-contain" />
+                          <button
+                            type="button"
+                            onClick={() => setFlatLayBackDataUrl(null)}
+                            className="absolute top-1 right-1 p-1 rounded bg-black/60 hover:bg-black/80 text-white"
+                            title="Remove"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <label className="flex flex-col items-center justify-center w-full aspect-square rounded-lg border-2 border-dashed border-krea-border hover:border-krea-muted bg-krea-input-bg cursor-pointer transition-colors">
+                          <Plus className="w-5 h-5 text-krea-muted mb-1" />
+                          <span className="text-[10px] text-krea-muted">Upload</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const reader = new FileReader();
+                                reader.onload = () => setFlatLayBackDataUrl(reader.result as string);
+                                reader.readAsDataURL(file);
+                              }
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-sm text-krea-muted">SKU (optional)</label>
@@ -1114,7 +1268,9 @@ Keep every detail identical. Only change the pose/angle.`;
                         ))
                       )}
                     </select>
-                    <p className="text-[10px] text-krea-muted">Using angles: {ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id)).map(p => p.label).join(', ') || 'Front, Three-quarter, Back'}</p>
+                    <p className="text-[10px] text-krea-muted">
+                      3 poses (front, 3/4, back)
+                    </p>
                   </div>
                 </div>
                 <div className="p-6 border-t border-krea-border space-y-3">
@@ -1125,16 +1281,16 @@ Keep every detail identical. Only change the pose/angle.`;
                   )}
                   <button
                     onClick={() => handleDressFromFlatLay()}
-                    disabled={isGeneratingOutfit || !flatLayDataUrl || !selectedBatch || anglePresetsList.length === 0}
+                    disabled={isGeneratingOutfit || !flatLayFrontDataUrl || !selectedBatch}
                     className="krea-button w-full flex items-center justify-center gap-2 py-3"
                   >
                     {isGeneratingOutfit && generatingProgress ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Generating {generatingProgress.current}/{generatingProgress.total}…
+                        {generatingProgress.current === 0 ? 'Analyzing garment…' : generatingProgress.current === 1 ? 'Preparing…' : `Generating ${generatingProgress.current - 1}/3…`}
                       </>
                     ) : (
-                      'Dress model'
+                      'Dress model (3 images)'
                     )}
                   </button>
                 </div>
@@ -1248,7 +1404,7 @@ Keep every detail identical. Only change the pose/angle.`;
                   <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-12 items-stretch">
                     {/* Image Preview + Pose gallery */}
                     <div className="space-y-3">
-                    <div className="relative aspect-square bg-krea-input-bg rounded-2xl overflow-hidden border border-krea-border shadow-2xl group min-h-0">
+                    <div className="relative w-auto h-[min(65vh,560px)] aspect-[2/3] bg-krea-input-bg rounded-2xl overflow-hidden border border-krea-border shadow-2xl group min-h-0">
                       {isGeneratingModel ? (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-krea-bg/40 backdrop-blur-sm z-10">
                           <Loader2 className="w-10 h-10 animate-spin text-krea-text" />
@@ -1261,7 +1417,7 @@ Keep every detail identical. Only change the pose/angle.`;
                           <img 
                             src={currentImage.url} 
                             alt="Generated Model" 
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-contain"
                             referrerPolicy="no-referrer"
                           />
                           <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1312,10 +1468,13 @@ Keep every detail identical. Only change the pose/angle.`;
                       const batchImages = modelOnly
                         .filter(img => (img.batchId ?? img.id) === batchId)
                         .sort((a, b) => {
-                          const ai = ANGLE_PRESETS.findIndex(p => p.id === (a.angleId ?? ''));
-                          const bi = ANGLE_PRESETS.findIndex(p => p.id === (b.angleId ?? ''));
-                          if (ai >= 0 && bi >= 0) return ai - bi;
-                          return (a.angleId ?? '').localeCompare(b.angleId ?? '');
+                          const aAngle = ANGLE_PRESETS.findIndex(p => p.id === (a.angleId ?? ''));
+                          const bAngle = ANGLE_PRESETS.findIndex(p => p.id === (b.angleId ?? ''));
+                          const angleCmp = (aAngle >= 0 ? aAngle : 999) - (bAngle >= 0 ? bAngle : 999);
+                          if (angleCmp !== 0) return angleCmp;
+                          const aStyle = PDP_STYLE_PRESETS.findIndex(p => p.id === (a.styleId ?? ''));
+                          const bStyle = PDP_STYLE_PRESETS.findIndex(p => p.id === (b.styleId ?? ''));
+                          return (aStyle >= 0 ? aStyle : 999) - (bStyle >= 0 ? bStyle : 999);
                         });
                       if (batchImages.length <= 1) return null;
                       return (
@@ -1324,6 +1483,9 @@ Keep every detail identical. Only change the pose/angle.`;
                           {batchImages.map((img) => {
                             const isActive = currentImage?.id === img.id;
                             const angleLabel = ANGLE_PRESETS.find(p => p.id === img.angleId)?.label ?? img.angleId ?? 'Pose';
+                            const styleLabel = PDP_STYLE_PRESETS.find(p => p.id === img.styleId)?.label;
+                            const hasMultipleStyles = new Set(batchImages.map(i => i.styleId)).size > 1;
+                            const thumbTitle = hasMultipleStyles && styleLabel ? `${angleLabel} · ${styleLabel}` : angleLabel;
                             return (
                               <button
                                 key={img.id}
@@ -1335,12 +1497,12 @@ Keep every detail identical. Only change the pose/angle.`;
                                 className={`shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
                                   isActive ? 'border-krea-text ring-2 ring-krea-text/20' : 'border-krea-border hover:border-krea-muted'
                                 }`}
-                                title={angleLabel}
+                                title={thumbTitle}
                               >
                                 <img
                                   src={img.url}
-                                  alt={angleLabel}
-                                  className="w-full h-full object-cover"
+                                  alt={thumbTitle}
+                                  className="w-full h-full object-contain"
                                   referrerPolicy="no-referrer"
                                 />
                               </button>
@@ -1351,9 +1513,9 @@ Keep every detail identical. Only change the pose/angle.`;
                     })()}
                     </div>
 
-                    {/* Details - same height as image, buttons at bottom */}
-                    <div className="flex flex-col min-h-0">
-                      <div className="flex-1 flex flex-col gap-8 md:gap-10">
+                    {/* Details - same height as preview card, button aligned with card bottom */}
+                    <div className="flex flex-col h-[min(65vh,560px)] min-h-0">
+                      <div className="flex flex-col gap-6 md:gap-8 flex-shrink-0">
                         <div className="space-y-1">
                           <h2 className="text-3xl font-display font-bold">
                             {(currentImage?.attributes?.name || attributes.name) || 'Unnamed Model'}
@@ -1361,7 +1523,7 @@ Keep every detail identical. Only change the pose/angle.`;
                           <p className="text-krea-muted">Base Model Profile</p>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-x-6 gap-y-8">
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-6">
                           <div className="space-y-1">
                             <p className="text-[10px] uppercase tracking-widest font-bold text-krea-muted">Gender</p>
                             <p className="text-sm">{currentImage?.attributes?.gender || attributes.gender}</p>
@@ -1385,7 +1547,7 @@ Keep every detail identical. Only change the pose/angle.`;
                         </div>
                       </div>
 
-                      <div className="flex gap-3 mt-auto pt-6">
+                      <div className="flex gap-3 mt-auto pt-4">
                         <button 
                           onClick={() => handleGenerate(false)}
                           disabled={isGeneratingModel}
@@ -1426,8 +1588,12 @@ Keep every detail identical. Only change the pose/angle.`;
                           <Loader2 className="w-12 h-12 text-krea-text animate-spin mx-auto" />
                           <p className="text-krea-text font-medium">
                             {generatingProgress
-                              ? `Generating outfit ${generatingProgress.current}/${generatingProgress.total}…`
-                              : 'Generating outfits…'}
+                              ? generatingProgress.current === 0
+                                ? 'Analyzing garment…'
+                                : generatingProgress.current === 1
+                                  ? 'Preparing…'
+                                  : `Generating pose ${generatingProgress.current - 1}/3…`
+                              : 'Generating…'}
                           </p>
                           <p className="text-sm text-krea-muted">Your model-in-outfit shots will appear here when ready.</p>
                         </div>
@@ -1466,7 +1632,7 @@ Keep every detail identical. Only change the pose/angle.`;
                           <div key={batchId} className="space-y-2">
                             <motion.div
                               layoutId={`outfit-${batchId}`}
-                              className="group relative aspect-square bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
+                              className="group relative aspect-[2/3] bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
                               onClick={() => {
                                 setCurrentImage(currentImg);
                                 if (currentImg.attributes) setAttributes(currentImg.attributes);
@@ -1476,7 +1642,7 @@ Keep every detail identical. Only change the pose/angle.`;
                               <img
                                 src={currentImg.url}
                                 alt={currentImg.attributes?.name ?? 'Outfit'}
-                                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                                className="w-full h-full object-contain transition-transform duration-500 group-hover:scale-110"
                                 referrerPolicy="no-referrer"
                               />
                               {hasMultiple && (
@@ -1587,7 +1753,7 @@ Keep every detail identical. Only change the pose/angle.`;
                           <div key={batchId} className="space-y-2">
                             <motion.div
                               layoutId={batchId}
-                              className="group relative aspect-square bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
+                              className="group relative aspect-[2/3] bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
                               onClick={() => {
                                 setCurrentImage(currentImg);
                                 if (currentImg.attributes) setAttributes(currentImg.attributes);
@@ -1597,7 +1763,7 @@ Keep every detail identical. Only change the pose/angle.`;
                               <img
                                 src={currentImg.url}
                                 alt={currentImg.attributes.name}
-                                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                                className="w-full h-full object-contain transition-transform duration-500 group-hover:scale-110"
                                 referrerPolicy="no-referrer"
                               />
                               {hasMultiple && (
