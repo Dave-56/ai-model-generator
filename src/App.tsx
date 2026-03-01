@@ -1323,6 +1323,19 @@ Keep every detail identical. Only change the pose/angle.`;
                     images: imgs.sort((a, b) => a.timestamp - b.timestamp),
                   }));
                   if (batches.length === 0) {
+                    if (isGeneratingOutfit) {
+                      return (
+                        <div className="col-span-full py-20 text-center space-y-4">
+                          <Loader2 className="w-12 h-12 text-krea-text animate-spin mx-auto" />
+                          <p className="text-krea-text font-medium">
+                            {generatingProgress
+                              ? `Generating outfit ${generatingProgress.current}/${generatingProgress.total}…`
+                              : 'Generating outfits…'}
+                          </p>
+                          <p className="text-sm text-krea-muted">Your model-in-outfit shots will appear here when ready.</p>
+                        </div>
+                      );
+                    }
                     return (
                       <div className="col-span-full py-20 text-center space-y-4">
                         <History className="w-12 h-12 text-krea-muted mx-auto" />
