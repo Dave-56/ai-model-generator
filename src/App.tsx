@@ -337,7 +337,7 @@ REQUIREMENTS:
 - ${anglePreset.promptSnippet}
 - Full body portrait from head to toe
 - IMPORTANT: Must not crop head or feet. The entire body from head to toes must be visible.
-- Outfit: Black cropped top and tight form-fitting short shorts.
+- OUTFIT (locked — use this exact description every time, no variation): Black short-sleeve fitted crop top ending at midriff. Black high-waist short shorts (hotpants length, upper thigh only). Same garment style for all models.
 - Footwear: Model must be BAREFOOT. No shoes, no heels, no sandals, no footwear of any kind.
 - High resolution, sharp details
 - The model should look like a real person, not AI-generated`;
@@ -397,6 +397,7 @@ REQUIREMENTS:
 - ${anglePreset.promptSnippet}
 - Same lighting, same background
 - Same face, same body, same hair
+- Same exact outfit (black crop top, black short shorts). Do not change clothing.
 
 Keep every detail identical. Only change the pose/angle.`;
           const base64Data = firstGeneratedImage.url.split(',')[1];
@@ -476,6 +477,8 @@ Keep every detail identical. Only change the pose/angle.`;
       }
       // After batch: show front-facing image first (first generated in angle order)
       if (firstGeneratedImage) setCurrentImage(firstGeneratedImage);
+      // Clear model name so the next model can be entered fresh
+      setAttributes(prev => ({ ...prev, name: '' }));
     } catch (err: any) {
       console.error("Generation error:", err);
       if (err.message?.includes("Requested entity was not found")) {
@@ -865,7 +868,7 @@ Keep every detail identical. Only change the pose/angle.`;
               onClick={() => setViewMode('gallery')}
               className={`text-sm font-medium transition-colors ${viewMode === 'gallery' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
             >
-              Gallery ({generatedImages.length})
+              Models ({generatedImages.length})
             </button>
           </div>
           <div className="flex items-center gap-4">
@@ -885,7 +888,7 @@ Keep every detail identical. Only change the pose/angle.`;
                   }
                 }}
                 className="p-2 text-krea-muted hover:text-red-400 transition-colors"
-                title="Clear Gallery"
+                title="Clear models"
               >
                 <Trash2 className="w-5 h-5" />
               </button>
@@ -1094,6 +1097,9 @@ Keep every detail identical. Only change the pose/angle.`;
                               className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
                               referrerPolicy="no-referrer"
                             />
+                            <div className="absolute bottom-0 left-0 right-0 p-2 bg-black/70 text-white text-xs font-medium truncate">
+                              {currentImg.attributes?.name || 'Unnamed'} · {currentImg.attributes?.ethnicity || '—'}
+                            </div>
                             {hasMultiple && (
                               <>
                                 <button
