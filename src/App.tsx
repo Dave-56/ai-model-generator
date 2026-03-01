@@ -493,7 +493,7 @@ Keep every detail identical. Only change the pose/angle.`;
   const handleDownload = (url: string, name: string) => {
     const link = document.createElement('a');
     link.href = url;
-    link.download = `nanobanana-${(name || 'unnamed').toLowerCase()}-${Date.now()}.png`;
+    link.download = `tiny-lemon-${(name || 'unnamed').toLowerCase()}-${Date.now()}.png`;
     link.click();
   };
 
@@ -520,7 +520,7 @@ Keep every detail identical. Only change the pose/angle.`;
             </div>
           </div>
           <div className="space-y-4">
-            <h1 className="text-4xl font-display font-bold tracking-tight">Nanobanana</h1>
+            <h1 className="text-4xl font-display font-bold tracking-tight">Tiny Lemon</h1>
             <p className="text-krea-muted text-lg">
               To use the high-quality image generation model, you need to select a paid Gemini API key.
             </p>
@@ -550,7 +550,7 @@ Keep every detail identical. Only change the pose/angle.`;
             <div className="w-8 h-8 bg-krea-btn-bg rounded-lg flex items-center justify-center">
               <Logo className="w-5 h-5 text-krea-btn-text" />
             </div>
-            <h1 className="text-xl font-display font-bold tracking-tight">Nanobanana</h1>
+            <h1 className="text-xl font-display font-bold tracking-tight">Tiny Lemon</h1>
           </div>
           {activeTab === 'model' && (
             <button 
