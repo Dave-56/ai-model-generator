@@ -34,6 +34,10 @@ export interface GeneratedImage {
   angleId?: string;
   /** Same for all images in one generation (multi-angle run). Used to group gallery cards. */
   batchId?: string;
+  /** 'flat_lay' = dressed from flat lay upload; undefined = model-only generation. */
+  sourceType?: 'model_only' | 'flat_lay';
+  /** Optional SKU label (for flat-lay runs); display/badges and future batch. */
+  skuName?: string;
 }
 
 export type ViewMode = 'builder' | 'gallery';

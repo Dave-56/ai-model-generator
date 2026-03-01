@@ -23,6 +23,7 @@ import {
 import { GoogleGenAI } from "@google/genai";
 import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset } from './types';
 import { PDP_STYLE_PRESETS, ANGLE_PRESETS } from './pdpPresets';
+import { generateGarmentFidelityPrompt } from './garmentFidelityPrompt';
 
 // Extend Window interface for AI Studio API key selection
 declare global {
@@ -153,7 +154,12 @@ export default function App() {
   const [galleryBatchIndex, setGalleryBatchIndex] = useState<Record<string, number>>({});
 
   // Brand PDP style (separate from model). Multi-select; used for fashion PDP photoshoots.
-  const [activeTab, setActiveTab] = useState<'model' | 'brand-style'>('model');
+  const [activeTab, setActiveTab] = useState<'model' | 'brand-style' | 'dress-model'>('model');
+  // Dress model (flat lay) flow: one flat lay image, optional SKU, selected batch.
+  const [flatLayDataUrl, setFlatLayDataUrl] = useState<string | null>(null);
+  const [dressModelSkuName, setDressModelSkuName] = useState('');
+  const [selectedDressBatchId, setSelectedDressBatchId] = useState<string | null>(null);
+  const [dressModelError, setDressModelError] = useState<string | null>(null);
   const [selectedStyleIds, setSelectedStyleIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('nanobanana_pdp_presets');
@@ -509,6 +515,125 @@ Keep every detail identical. Only change the pose/angle.`;
     }
   };
 
+  const handleDressFromFlatLay = async () => {
+    if (!hasApiKey || !flatLayDataUrl) {
+      setDressModelError('Upload a flat lay image.');
+      return;
+    }
+    const byBatch = new Map<string, GeneratedImage[]>();
+    for (const img of generatedImages) {
+      const bid = img.batchId ?? img.id;
+      if (!byBatch.has(bid)) byBatch.set(bid, []);
+      byBatch.get(bid)!.push(img);
+    }
+    const effectiveBatchId = selectedDressBatchId ?? (currentImage ? (currentImage.batchId ?? currentImage.id) : null) ?? (generatedImages[0] ? (generatedImages[0].batchId ?? generatedImages[0].id) : null);
+    const batchImages: GeneratedImage[] = effectiveBatchId ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp) : [];
+    if (batchImages.length === 0) {
+      setDressModelError('Select a model first. Generate a model in the Model tab.');
+      return;
+    }
+    const anglePresetsOrdered = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
+    const anglePresetsList = anglePresetsOrdered.length > 0 ? anglePresetsOrdered : [ANGLE_PRESETS[0]];
+    const stylePreset = PDP_STYLE_PRESETS.find(p => p.id === (selectedStyleIds[0] ?? PDP_STYLE_PRESETS[0].id)) ?? PDP_STYLE_PRESETS[0];
+    const modelRefImage = batchImages[0];
+    let modelRefBase64: string | null = null;
+    if (modelRefImage.url.startsWith('data:')) {
+      modelRefBase64 = modelRefImage.url.split(',')[1] ?? null;
+    } else if (modelRefImage.url.startsWith('http')) {
+      try {
+        const res = await fetch(modelRefImage.url);
+        const blob = await res.blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        modelRefBase64 = dataUrl.split(',')[1] ?? null;
+      } catch (_) {
+        modelRefBase64 = null;
+      }
+    }
+    if (!modelRefBase64) {
+      setDressModelError('Selected model image must be available (try re-generating the model).');
+      return;
+    }
+    const flatLayMatch = flatLayDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    const flatLayBase64 = flatLayMatch?.[2] ?? null;
+    const flatLayMime = (flatLayMatch?.[1] ?? 'image/png').toLowerCase();
+    if (!flatLayBase64) {
+      setDressModelError('Invalid flat lay image.');
+      return;
+    }
+    setDressModelError(null);
+    setIsGenerating(true);
+    const batchId = Math.random().toString(36).substring(7);
+    const skuName = dressModelSkuName.trim() || undefined;
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      for (let i = 0; i < anglePresetsList.length; i++) {
+        const anglePreset = anglePresetsList[i];
+        setGeneratingProgress({ current: i + 1, total: anglePresetsList.length });
+        const prompt = generateGarmentFidelityPrompt(anglePreset, stylePreset);
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-image-preview',
+          contents: {
+            parts: [
+              { inlineData: { data: flatLayBase64, mimeType: flatLayMime === 'image/jpeg' ? 'image/jpeg' : 'image/png' } },
+              { inlineData: { data: modelRefBase64, mimeType: 'image/png' } },
+              { text: prompt },
+            ],
+          },
+          config: { imageConfig: { aspectRatio: '1:1', imageSize: '1K' } },
+        });
+        let imageUrl = '';
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+          if (part.inlineData) {
+            imageUrl = `data:image/png;base64,${part.inlineData.data}`;
+            break;
+          }
+        }
+        if (!imageUrl) throw new Error('No image data returned from model.');
+        let finalUrl = imageUrl;
+        try {
+          const base64 = imageUrl.split(',')[1];
+          if (base64) {
+            const uploadRes = await fetch('/api/upload-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: base64 }),
+            });
+            if (uploadRes.ok) {
+              const { url } = await uploadRes.json();
+              if (url) finalUrl = url;
+            }
+          }
+        } catch (_) {}
+        const newImage: GeneratedImage = {
+          id: Math.random().toString(36).substring(7),
+          url: finalUrl,
+          attributes: modelRefImage.attributes,
+          timestamp: Date.now(),
+          prompt,
+          styleId: stylePreset.id,
+          angleId: anglePreset.id,
+          batchId,
+          sourceType: 'flat_lay',
+          skuName,
+        };
+        setGeneratedImages(prev => [newImage, ...prev]);
+        setCurrentImage(newImage);
+      }
+      setViewMode('gallery');
+    } catch (err: any) {
+      console.error('Dress from flat lay error:', err);
+      setDressModelError(err?.message || 'Failed to generate. Try again.');
+    } finally {
+      setIsGenerating(false);
+      setGeneratingProgress(null);
+    }
+  };
+
   if (!hasApiKey) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-krea-bg p-6">
@@ -566,7 +691,7 @@ Keep every detail identical. Only change the pose/angle.`;
           )}
         </div>
 
-        {/* Tab bar: Model | Brand style */}
+        {/* Tab bar: Model | Brand style | Dress model */}
         <div className="flex border-b border-krea-border">
           <button
             onClick={() => setActiveTab('model')}
@@ -583,6 +708,14 @@ Keep every detail identical. Only change the pose/angle.`;
             }`}
           >
             Brand style
+          </button>
+          <button
+            onClick={() => setActiveTab('dress-model')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${
+              activeTab === 'dress-model' ? 'text-krea-text border-krea-text' : 'text-krea-muted border-transparent hover:text-krea-text'
+            }`}
+          >
+            Dress model
           </button>
         </div>
 
@@ -785,7 +918,7 @@ Keep every detail identical. Only change the pose/angle.`;
           </motion.button>
         </div>
           </>
-          ) : (
+          ) : activeTab === 'brand-style' ? (
           <div className="flex-1 flex flex-col min-h-0">
             <div className="flex-1 overflow-y-auto p-6 space-y-8">
               <div className="space-y-4">
@@ -850,6 +983,111 @@ Keep every detail identical. Only change the pose/angle.`;
               </button>
             </div>
           </div>
+          ) : (
+          /* Dress model tab */
+          (() => {
+            const byBatch = new Map<string, GeneratedImage[]>();
+            for (const img of generatedImages) {
+              const bid = img.batchId ?? img.id;
+              if (!byBatch.has(bid)) byBatch.set(bid, []);
+              byBatch.get(bid)!.push(img);
+            }
+            const batches = Array.from(byBatch.entries()).map(([batchId, imgs]) => ({
+              batchId,
+              images: imgs.sort((a, b) => a.timestamp - b.timestamp),
+            }));
+            const defaultBatchId = currentImage ? (currentImage.batchId ?? currentImage.id) : (generatedImages[0] ? (generatedImages[0].batchId ?? generatedImages[0].id) : null);
+            const effectiveDressBatchId = selectedDressBatchId ?? defaultBatchId;
+            const selectedBatch = batches.find(b => b.batchId === effectiveDressBatchId);
+            const anglePresetsList = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
+            const numAngles = anglePresetsList.length > 0 ? anglePresetsList.length : ANGLE_PRESETS.length;
+            return (
+              <div className="flex-1 flex flex-col min-h-0">
+                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                  <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Flat lay</label>
+                  <div className="space-y-2">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onload = () => setFlatLayDataUrl(reader.result as string);
+                          reader.readAsDataURL(file);
+                          setDressModelError(null);
+                        }
+                      }}
+                      className="krea-input w-full text-sm file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-krea-btn-sec-bg file:text-krea-text"
+                    />
+                    {flatLayDataUrl && (
+                      <div className="relative w-full aspect-square max-h-32 rounded-lg overflow-hidden border border-krea-border bg-krea-input-bg">
+                        <img src={flatLayDataUrl} alt="Flat lay" className="w-full h-full object-contain" />
+                        <button
+                          type="button"
+                          onClick={() => setFlatLayDataUrl(null)}
+                          className="absolute top-1 right-1 p-1 rounded bg-black/60 hover:bg-black/80 text-white"
+                          title="Remove"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm text-krea-muted">SKU (optional)</label>
+                    <input
+                      type="text"
+                      value={dressModelSkuName}
+                      onChange={(e) => setDressModelSkuName(e.target.value)}
+                      className="krea-input w-full"
+                      placeholder="e.g. TSH-001"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm text-krea-muted">Select model</label>
+                    <select
+                      value={effectiveDressBatchId ?? ''}
+                      onChange={(e) => setSelectedDressBatchId(e.target.value || null)}
+                      className="krea-input w-full appearance-none"
+                    >
+                      {batches.length === 0 ? (
+                        <option value="">No models yet — generate one first</option>
+                      ) : (
+                        batches.map(({ batchId, images }) => (
+                          <option key={batchId} value={batchId}>
+                            {images[0]?.attributes?.name || 'Unnamed'} ({images.length} pose{images.length !== 1 ? 's' : ''})
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    <p className="text-[10px] text-krea-muted">Using angles: {ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id)).map(p => p.label).join(', ') || 'Front, Three-quarter, Back'}</p>
+                  </div>
+                </div>
+                <div className="p-6 border-t border-krea-border space-y-3">
+                  {dressModelError && (
+                    <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+                      <p className="text-red-400 text-xs font-medium">{dressModelError}</p>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => handleDressFromFlatLay()}
+                    disabled={isGenerating || !flatLayDataUrl || !selectedBatch || anglePresetsList.length === 0}
+                    className="krea-button w-full flex items-center justify-center gap-2 py-3"
+                  >
+                    {isGenerating && generatingProgress ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Generating {generatingProgress.current}/{generatingProgress.total}…
+                      </>
+                    ) : (
+                      numAngles > 1 ? `Generate dressed model (${numAngles} angles)` : 'Generate dressed model (1 angle)'
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })()
           )}
       </aside>
 
@@ -1085,26 +1323,23 @@ Keep every detail identical. Only change the pose/angle.`;
                         const currentImg = images[Math.min(idx, images.length - 1)];
                         const hasMultiple = images.length > 1;
                         return (
-                          <motion.div
-                            key={batchId}
-                            layoutId={batchId}
-                            className="group relative aspect-square bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
-                            onClick={() => {
-                              setCurrentImage(currentImg);
-                              if (currentImg.attributes) setAttributes(currentImg.attributes);
-                              setLightboxOpen(true);
-                            }}
-                          >
-                            <img
-                              src={currentImg.url}
-                              alt={currentImg.attributes.name}
-                              className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-                              referrerPolicy="no-referrer"
-                            />
-                            <div className="absolute bottom-0 left-0 right-0 p-2 bg-black/70 text-white text-xs font-medium truncate">
-                              {currentImg.attributes?.name || 'Unnamed'} · {currentImg.attributes?.ethnicity || '—'}
-                            </div>
-                            {hasMultiple && (
+                          <div key={batchId} className="space-y-2">
+                            <motion.div
+                              layoutId={batchId}
+                              className="group relative aspect-square bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border cursor-pointer"
+                              onClick={() => {
+                                setCurrentImage(currentImg);
+                                if (currentImg.attributes) setAttributes(currentImg.attributes);
+                                setLightboxOpen(true);
+                              }}
+                            >
+                              <img
+                                src={currentImg.url}
+                                alt={currentImg.attributes.name}
+                                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                                referrerPolicy="no-referrer"
+                              />
+                              {hasMultiple && (
                               <>
                                 <button
                                   type="button"
@@ -1146,7 +1381,21 @@ Keep every detail identical. Only change the pose/angle.`;
                                 <Trash2 className="w-4 h-4" />
                               </button>
                             </div>
-                          </motion.div>
+                            </motion.div>
+                            <div className="text-center">
+                              {(currentImg.sourceType === 'flat_lay' || images.some(img => img.sourceType === 'flat_lay')) && (
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-krea-muted truncate mb-0.5">
+                                  Flat lay{images[0]?.skuName ? ` · ${images[0].skuName}` : ''}
+                                </p>
+                              )}
+                              <p className="font-medium text-krea-text truncate">
+                                {currentImg.attributes?.name || 'Unnamed'}
+                              </p>
+                              <p className="text-sm text-krea-muted truncate">
+                                {currentImg.attributes?.ethnicity || '—'}
+                              </p>
+                            </div>
+                          </div>
                         );
                       });
                     })()}
