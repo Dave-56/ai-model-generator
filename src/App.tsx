@@ -1117,7 +1117,7 @@ Keep every detail identical. Only change the pose/angle.`;
                         Generating {generatingProgress.current}/{generatingProgress.total}…
                       </>
                     ) : (
-                      numAngles > 1 ? `Generate dressed model (${numAngles} angles)` : 'Generate dressed model (1 angle)'
+                      'Dress model'
                     )}
                   </button>
                 </div>
