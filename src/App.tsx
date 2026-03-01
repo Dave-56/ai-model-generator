@@ -563,36 +563,34 @@ Keep every detail identical. Only change the pose/angle.`;
     const anglePresetsOrdered = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
     const anglePresetsList = anglePresetsOrdered.length > 0 ? anglePresetsOrdered : [ANGLE_PRESETS[0]];
     const stylePreset = PDP_STYLE_PRESETS.find(p => p.id === (selectedStyleIds[0] ?? PDP_STYLE_PRESETS[0].id)) ?? PDP_STYLE_PRESETS[0];
-    const modelRefImage = batchImages[0];
-    let modelRefBase64: string | null = null;
-    if (modelRefImage.url.startsWith('data:')) {
-      modelRefBase64 = modelRefImage.url.split(',')[1] ?? null;
-    } else if (modelRefImage.url.startsWith('http')) {
-      try {
-        const res = await fetch(modelRefImage.url);
-        const blob = await res.blob();
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-        modelRefBase64 = dataUrl.split(',')[1] ?? null;
-      } catch (_) {
-        modelRefBase64 = null;
+
+    const extractBase64 = async (img: GeneratedImage): Promise<string | null> => {
+      if (img.url.startsWith('data:')) {
+        return img.url.split(',')[1] ?? null;
+      } else if (img.url.startsWith('http')) {
+        try {
+          const res = await fetch(img.url);
+          const blob = await res.blob();
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          return dataUrl.split(',')[1] ?? null;
+        } catch (_) {
+          return null;
+        }
       }
-    }
-    if (!modelRefBase64) {
+      return null;
+    };
+
+    const fallbackRefBase64 = await extractBase64(batchImages[0]);
+    if (!fallbackRefBase64) {
       setDressModelError('Selected model image must be available (try re-generating the model).');
       return;
     }
-    let normalizedRefBase64: string;
-    try {
-      normalizedRefBase64 = await normalizeReferenceImage(modelRefBase64, 'image/png');
-    } catch (e) {
-      setDressModelError('Could not prepare reference image. Try another model.');
-      return;
-    }
+
     const flatLayMatch = flatLayDataUrl.match(/^data:([^;]+);base64,(.+)$/);
     const flatLayBase64 = flatLayMatch?.[2] ?? null;
     const flatLayMime = (flatLayMatch?.[1] ?? 'image/png').toLowerCase();
@@ -609,6 +607,17 @@ Keep every detail identical. Only change the pose/angle.`;
       for (let i = 0; i < anglePresetsList.length; i++) {
         const anglePreset = anglePresetsList[i];
         setGeneratingProgress({ current: i + 1, total: anglePresetsList.length });
+
+        const matchingRefImage = batchImages.find(img => img.angleId === anglePreset.id) ?? batchImages[0];
+        let refBase64 = await extractBase64(matchingRefImage);
+        if (!refBase64) refBase64 = fallbackRefBase64;
+        let normalizedRefBase64: string;
+        try {
+          normalizedRefBase64 = await normalizeReferenceImage(refBase64, 'image/png');
+        } catch (e) {
+          normalizedRefBase64 = await normalizeReferenceImage(fallbackRefBase64, 'image/png');
+        }
+
         const prompt = generateGarmentFidelityPrompt(anglePreset, stylePreset);
         const response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-image-preview',
@@ -647,7 +656,7 @@ Keep every detail identical. Only change the pose/angle.`;
         const newImage: GeneratedImage = {
           id: Math.random().toString(36).substring(7),
           url: finalUrl,
-          attributes: modelRefImage.attributes,
+          attributes: matchingRefImage.attributes,
           timestamp: Date.now(),
           prompt,
           styleId: stylePreset.id,
