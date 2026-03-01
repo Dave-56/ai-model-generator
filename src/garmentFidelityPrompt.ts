@@ -28,6 +28,12 @@ STYLING (standard quality — keep consistent, no random styles):
 - If the flat lay shows a full outfit (top and bottom), the model wears exactly those items; do not add or change other clothing.
 - Never invent patterns, logos, or text that are not in the flat lay. Non-garment clothing must match the reference image and must not distract from the product.
 
+NATURAL WEAR (critical — must look actually worn, not pasted on):
+- The garment must drape and conform to the model's body: follow the curves of shoulders, chest, arms, waist, and hips. It must look worn, not digitally composited or floating.
+- Show realistic fabric behavior: subtle folds, creases, and tension where the body bends or where the fit is snug or loose (e.g. under bust, at elbows, around waist, underarms). Avoid stiff, perfectly smooth fabric with no natural wrinkles.
+- Patterns (stripes, prints, plaids) must follow the 3D surface naturally: they should curve and flow with the body. Do not stretch or warp the pattern unnaturally; preserve stripe width and alignment as they would appear on real fabric worn on a real person.
+- Pay special attention to shoulders and underarms: the garment should wrap around the body there, not look flat or detached. Sleeves and hems should hang or sit naturally.
+
 POSE & FRAMING:
 {{ANGLE_SNIPPET}}
 - Full body from head to toe. Leave clear space above the head and below the feet. Do not crop the head or feet; the entire body must be visible.
@@ -36,7 +42,7 @@ POSE & FRAMING:
 
 FOOTWEAR: Model is barefoot. No shoes.
 
-Output: One photorealistic image, high resolution, sharp details. The person must be clearly the same as in the reference; only the clothing changes to match the flat lay garment.`;
+Output: One photorealistic image, high resolution, sharp details. The person must be clearly the same as in the reference; only the clothing changes to match the flat lay garment. The garment must look like real clothing actually worn in a studio shot—natural drape, realistic folds, no pasted-on or stiff appearance.`;
 
 /**
  * Builds the full garment-fidelity prompt for one pose, with angle and PDP style
