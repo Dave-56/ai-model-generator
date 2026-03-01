@@ -20,6 +20,7 @@ GARMENT FIDELITY (critical — do not alter):
 - Copy the garment from the flat lay exactly: same color, pattern, print, and texture.
 - Preserve all visible details: buttons, zippers, logos, labels, stitching, hardware, pockets, seams.
 - Do not add or remove design elements. Do not change neckline, sleeve length, or hem.
+- Preserve the garment's length and hem exactly as in the flat lay; do not shorten, crop, or lengthen the item.
 - Fabric must look the same (e.g. denim, knit, satin) as in the flat lay.
 
 STYLING (standard quality — keep consistent, no random styles):
@@ -29,7 +30,8 @@ STYLING (standard quality — keep consistent, no random styles):
 
 POSE & FRAMING:
 {{ANGLE_SNIPPET}}
-- Full body from head to toe, same framing as the reference model image.
+- Full body from head to toe. Leave clear space above the head and below the feet. Do not crop the head or feet; the entire body must be visible.
+- Match the reference model's pose and angle only; use consistent, centered framing with similar margins (do not copy tight or loose crop from the reference).
 {{STYLE_SNIPPET}}
 
 FOOTWEAR: Model is barefoot. No shoes.

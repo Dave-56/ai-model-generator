@@ -24,6 +24,7 @@ import { GoogleGenAI } from "@google/genai";
 import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset } from './types';
 import { PDP_STYLE_PRESETS, ANGLE_PRESETS } from './pdpPresets';
 import { generateGarmentFidelityPrompt } from './garmentFidelityPrompt';
+import { normalizeReferenceImage } from './normalizeReferenceImage';
 
 // Extend Window interface for AI Studio API key selection
 declare global {
@@ -559,6 +560,13 @@ Keep every detail identical. Only change the pose/angle.`;
       setDressModelError('Selected model image must be available (try re-generating the model).');
       return;
     }
+    let normalizedRefBase64: string;
+    try {
+      normalizedRefBase64 = await normalizeReferenceImage(modelRefBase64, 'image/png');
+    } catch (e) {
+      setDressModelError('Could not prepare reference image. Try another model.');
+      return;
+    }
     const flatLayMatch = flatLayDataUrl.match(/^data:([^;]+);base64,(.+)$/);
     const flatLayBase64 = flatLayMatch?.[2] ?? null;
     const flatLayMime = (flatLayMatch?.[1] ?? 'image/png').toLowerCase();
@@ -581,7 +589,7 @@ Keep every detail identical. Only change the pose/angle.`;
           contents: {
             parts: [
               { inlineData: { data: flatLayBase64, mimeType: flatLayMime === 'image/jpeg' ? 'image/jpeg' : 'image/png' } },
-              { inlineData: { data: modelRefBase64, mimeType: 'image/png' } },
+              { inlineData: { data: normalizedRefBase64, mimeType: 'image/png' } },
               { text: prompt },
             ],
           },
