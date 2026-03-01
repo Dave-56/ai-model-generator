@@ -12,7 +12,6 @@ import {
   ChevronLeft,
   Loader2, 
   Image as ImageIcon,
-  Camera,
   RefreshCw,
   Copy,
   Check,
@@ -457,6 +456,8 @@ Keep every detail identical. Only change the pose/angle.`;
         setGeneratedImages(prev => [newImage, ...prev]);
         setCurrentImage(newImage);
       }
+      // After batch: show front-facing image first (first generated in angle order)
+      if (firstGeneratedImage) setCurrentImage(firstGeneratedImage);
     } catch (err: any) {
       console.error("Generation error:", err);
       if (err.message?.includes("Requested entity was not found")) {
@@ -988,14 +989,6 @@ Keep every detail identical. Only change the pose/angle.`;
                           <RefreshCw className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
                           Regenerate
                         </button>
-                        <button 
-                          onClick={() => handleGenerate(true)}
-                          disabled={isGenerating || !currentImage}
-                          className="krea-button-secondary flex items-center justify-center gap-2"
-                        >
-                          <Camera className="w-4 h-4" />
-                          New Pose
-                        </button>
                       </div>
                     </div>
                   </div>
@@ -1061,7 +1054,7 @@ Keep every detail identical. Only change the pose/angle.`;
                             onClick={() => {
                               setCurrentImage(currentImg);
                               if (currentImg.attributes) setAttributes(currentImg.attributes);
-                              setViewMode('builder');
+                              setLightboxOpen(true);
                             }}
                           >
                             <img
