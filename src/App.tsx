@@ -859,16 +859,16 @@ Keep every detail identical. Only change the pose/angle.`;
         <header className="h-16 border-b border-krea-border flex items-center justify-between px-8 bg-krea-bg/50 backdrop-blur-md z-10">
           <div className="flex gap-6">
             <button 
-              onClick={() => setViewMode('builder')}
-              className={`text-sm font-medium transition-colors ${viewMode === 'builder' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
-            >
-              Builder
-            </button>
-            <button 
               onClick={() => setViewMode('gallery')}
               className={`text-sm font-medium transition-colors ${viewMode === 'gallery' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
             >
               Models ({generatedImages.length})
+            </button>
+            <button 
+              onClick={() => setViewMode('builder')}
+              className={`text-sm font-medium transition-colors ${viewMode === 'builder' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
+            >
+              Builder
             </button>
           </div>
           <div className="flex items-center gap-4">
