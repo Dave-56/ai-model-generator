@@ -862,7 +862,7 @@ Keep every detail identical. Only change the pose/angle.`;
               onClick={() => setViewMode('gallery')}
               className={`text-sm font-medium transition-colors ${viewMode === 'gallery' ? 'text-krea-text border-b-2 border-krea-text pb-0.5' : 'text-krea-muted hover:text-krea-text border-b-2 border-transparent pb-0.5'}`}
             >
-              Models ({generatedImages.length})
+              Models ({new Set(generatedImages.map(img => img.batchId ?? img.id)).size})
             </button>
             <button 
               onClick={() => setViewMode('builder')}
