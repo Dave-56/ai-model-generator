@@ -340,6 +340,12 @@ REQUIREMENTS:
 
     const errors: string[] = [];
     if (!attributes.name.trim()) errors.push('Model Name is required');
+    else {
+      const nameLower = attributes.name.trim().toLowerCase();
+      if (generatedImages.some((img) => img.attributes.name.trim().toLowerCase() === nameLower)) {
+        errors.push('Model name must be unique');
+      }
+    }
     const requiredFields = ['gender', 'ethnicity', 'skinTone', 'bodyBuild', 'height', 'hairStyle', 'hairColor', 'ageRange'];
     requiredFields.forEach(field => {
       if (!attributes[field as keyof ModelAttributes]) errors.push(`${field.charAt(0).toUpperCase() + field.slice(1)} is required`);
@@ -580,11 +586,14 @@ Keep every detail identical. Only change the pose/angle.`;
                     type="text" 
                     value={attributes.name}
                     onChange={(e) => updateAttribute('name', e.target.value)}
-                    className={`krea-input w-full ${validationErrors.includes('Model Name is required') ? 'border-red-500/50 focus:border-red-500' : ''}`}
+                    className={`krea-input w-full ${validationErrors.some(e => e.includes('Model Name') || e.includes('unique')) ? 'border-red-500/50 focus:border-red-500' : ''}`}
                     placeholder="e.g. Zara"
                   />
                   {validationErrors.includes('Model Name is required') && (
                     <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider">Name is required to generate</p>
+                  )}
+                  {validationErrors.includes('Model name must be unique') && (
+                    <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider">That name is already used. Choose another.</p>
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
