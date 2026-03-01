@@ -20,7 +20,7 @@ import {
   Maximize2,
   X
 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset } from './types';
 import { PDP_STYLE_PRESETS, ANGLE_PRESETS } from './pdpPresets';
 import { generateGarmentFidelityPrompt } from './garmentFidelityPrompt';
@@ -444,7 +444,11 @@ Keep every detail identical. Only change the pose/angle.`;
         const response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-image-preview',
           contents: { parts },
-          config: { imageConfig: { aspectRatio: "1:1", imageSize: "2K" } },
+          config: {
+            temperature: 0.4,
+            imageConfig: { aspectRatio: "1:1", imageSize: "512" },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+          },
         });
 
         let imageUrl = '';
@@ -628,7 +632,11 @@ Keep every detail identical. Only change the pose/angle.`;
               { text: prompt },
             ],
           },
-          config: { imageConfig: { aspectRatio: '1:1', imageSize: '2K' } },
+          config: {
+            temperature: 0.4,
+            imageConfig: { aspectRatio: '1:1', imageSize: '512' },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+          },
         });
         let imageUrl = '';
         for (const part of response.candidates?.[0]?.content?.parts || []) {
