@@ -388,6 +388,25 @@ Keep every detail identical. Only change the pose/angle.`;
         }
         if (!imageUrl) throw new Error("No image data returned from model.");
 
+        // Upload to Vercel Blob when deployed (saves localStorage space); fallback to data URL locally
+        let finalUrl = imageUrl;
+        try {
+          const base64 = imageUrl.split(',')[1];
+          if (base64) {
+            const uploadRes = await fetch('/api/upload-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: base64 }),
+            });
+            if (uploadRes.ok) {
+              const { url } = await uploadRes.json();
+              if (url) finalUrl = url;
+            }
+          }
+        } catch (_) {
+          // Keep data URL if upload fails (e.g. local dev without Blob)
+        }
+
         let estimatedAgeRange = workingAttributes.ageRange;
         if (!firstGeneratedImage) {
           try {
@@ -409,7 +428,7 @@ Keep every detail identical. Only change the pose/angle.`;
 
         const newImage: GeneratedImage = {
           id: Math.random().toString(36).substring(7),
-          url: imageUrl,
+          url: finalUrl,
           attributes: workingAttributes,
           timestamp: Date.now(),
           prompt,
