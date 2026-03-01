@@ -726,8 +726,16 @@ Keep every detail identical. Only change the pose/angle.`;
           )}
         </div>
 
-        {/* Tab bar: Model | Brand style | Dress model */}
+        {/* Tab bar: Dress model | Model | Brand style */}
         <div className="flex border-b border-krea-border">
+          <button
+            onClick={() => setActiveTab('dress-model')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${
+              activeTab === 'dress-model' ? 'text-krea-text border-krea-text' : 'text-krea-muted border-transparent hover:text-krea-text'
+            }`}
+          >
+            Dress model
+          </button>
           <button
             onClick={() => setActiveTab('model')}
             className={`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${
@@ -743,14 +751,6 @@ Keep every detail identical. Only change the pose/angle.`;
             }`}
           >
             Brand style
-          </button>
-          <button
-            onClick={() => setActiveTab('dress-model')}
-            className={`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${
-              activeTab === 'dress-model' ? 'text-krea-text border-krea-text' : 'text-krea-muted border-transparent hover:text-krea-text'
-            }`}
-          >
-            Dress model
           </button>
         </div>
 
