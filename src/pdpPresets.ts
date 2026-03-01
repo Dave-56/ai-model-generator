@@ -7,12 +7,14 @@ import type { PdpStylePreset, AnglePreset } from './types';
 export const PDP_STYLE_PRESETS: PdpStylePreset[] = [
   {
     id: 'white-studio',
-    label: 'White Studio',
+    label: 'White / clean studio',
+    description: 'Pure or near-white background, soft even light. Classic product look, works for most retailers (e.g. ASOS, Zara). Very safe and versatile.',
     promptSnippet: 'Background: pure white (#FFFFFF). Soft, even studio lighting. Clean, minimal e-commerce look.',
   },
   {
     id: 'grey-studio',
-    label: 'Grey Studio',
+    label: 'Grey / neutral studio',
+    description: 'Light grey or neutral backdrop, soft shadows. Feels a bit more premium than pure white, still very "shop" and on-model.',
     promptSnippet: 'Background: neutral grey studio sweep. Soft, even studio lighting. Professional product photography look.',
   },
   {

@@ -152,17 +152,21 @@ export default function App() {
   /** Per-batch index for gallery carousel (which pose is shown in each card). */
   const [galleryBatchIndex, setGalleryBatchIndex] = useState<Record<string, number>>({});
 
-  // Brand PDP style (separate from model). Default = first preset in each array.
+  // Brand PDP style (separate from model). Multi-select; used for fashion PDP photoshoots.
   const [activeTab, setActiveTab] = useState<'model' | 'brand-style'>('model');
-  const [selectedStyleId, setSelectedStyleId] = useState<string>(() => {
+  const [selectedStyleIds, setSelectedStyleIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('nanobanana_pdp_presets');
       if (saved) {
-        const parsed = JSON.parse(saved) as { styleId?: string };
-        if (parsed.styleId && PDP_STYLE_PRESETS.some(p => p.id === parsed.styleId)) return parsed.styleId;
+        const parsed = JSON.parse(saved) as { styleId?: string; styleIds?: string[] };
+        if (Array.isArray(parsed.styleIds) && parsed.styleIds.length > 0) {
+          const valid = parsed.styleIds.filter((id: string) => PDP_STYLE_PRESETS.some(p => p.id === id));
+          if (valid.length > 0) return valid;
+        }
+        if (parsed.styleId && PDP_STYLE_PRESETS.some(p => p.id === parsed.styleId)) return [parsed.styleId];
       }
     } catch (_) {}
-    return PDP_STYLE_PRESETS[0].id;
+    return [PDP_STYLE_PRESETS[0].id];
   });
   // Multiple angles per PDP (e.g. front, 3/4, back) — default all three.
   const [selectedAngleIds, setSelectedAngleIds] = useState<string[]>(() => {
@@ -184,13 +188,13 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleId: selectedStyleId, angleIds: selectedAngleIds }));
+      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleIds: selectedStyleIds, angleIds: selectedAngleIds }));
     } catch (_) {}
-  }, [selectedStyleId, selectedAngleIds]);
+  }, [selectedStyleIds, selectedAngleIds]);
 
   const handleSaveBrandStyle = () => {
     try {
-      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleId: selectedStyleId, angleIds: selectedAngleIds }));
+      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleIds: selectedStyleIds, angleIds: selectedAngleIds }));
       setBrandStyleSaveFeedback(true);
       window.setTimeout(() => setBrandStyleSaveFeedback(false), 2000);
     } catch (_) {}
@@ -200,6 +204,13 @@ export default function App() {
     setSelectedAngleIds(prev => {
       const next = prev.includes(angleId) ? prev.filter(id => id !== angleId) : [...prev, angleId];
       return next.length > 0 ? next : prev;
+    });
+  };
+
+  const toggleStyleId = (styleId: string) => {
+    setSelectedStyleIds(prev => {
+      const next = prev.includes(styleId) ? prev.filter(id => id !== styleId) : [...prev, styleId];
+      return next.length > 0 ? next : [PDP_STYLE_PRESETS[0].id];
     });
   };
 
@@ -362,7 +373,8 @@ REQUIREMENTS:
     setIsGenerating(true);
     setError(null);
 
-    const stylePreset = PDP_STYLE_PRESETS.find(p => p.id === selectedStyleId) ?? PDP_STYLE_PRESETS[0];
+    const firstStyleId = selectedStyleIds[0] ?? PDP_STYLE_PRESETS[0].id;
+    const stylePreset = PDP_STYLE_PRESETS.find(p => p.id === firstStyleId) ?? PDP_STYLE_PRESETS[0];
     const anglePresetsOrdered = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
     const anglePresetsList = anglePresetsOrdered.length > 0 ? anglePresetsOrdered : [ANGLE_PRESETS[0]];
 
@@ -775,19 +787,29 @@ Keep every detail identical. Only change the pose/angle.`;
             <div className="flex-1 overflow-y-auto p-6 space-y-8">
               <div className="space-y-4">
                 <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Brand PDP Style</label>
-                <p className="text-xs text-krea-muted">Your workspace uses this look for all photoshoots. Save so every model you generate matches your brand.</p>
+                <p className="text-xs text-krea-muted">Choose one or more looks for your fashion PDP photoshoots (model wearing clothes). Saved to your workspace.</p>
                 <div className="space-y-4">
-                  <div className="space-y-1.5">
-                    <label className="text-sm text-krea-muted">Style</label>
-                    <select
-                      value={selectedStyleId}
-                      onChange={(e) => setSelectedStyleId(e.target.value)}
-                      className="krea-input w-full appearance-none"
-                    >
+                  <div className="space-y-2">
+                    <label className="text-sm text-krea-muted">Styles</label>
+                    <p className="text-[10px] text-krea-muted">Select the styles your brand uses. We’ll use these when generating PDP images.</p>
+                    <div className="space-y-3">
                       {PDP_STYLE_PRESETS.map((p) => (
-                        <option key={p.id} value={p.id}>{p.label}</option>
+                        <label key={p.id} className="flex gap-3 cursor-pointer group">
+                          <input
+                            type="checkbox"
+                            checked={selectedStyleIds.includes(p.id)}
+                            onChange={() => toggleStyleId(p.id)}
+                            className="mt-1 rounded border-krea-border bg-krea-input-bg text-krea-accent focus:ring-krea-accent flex-shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <span className="text-sm font-medium text-krea-text block">{p.label}</span>
+                            {p.description && (
+                              <p className="text-[10px] text-krea-muted mt-0.5">{p.description}</p>
+                            )}
+                          </div>
+                        </label>
                       ))}
-                    </select>
+                    </div>
                   </div>
                 <div className="space-y-2">
                   <label className="text-sm text-krea-muted">Angles (for each PDP)</label>

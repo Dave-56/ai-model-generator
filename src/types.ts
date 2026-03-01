@@ -13,6 +13,8 @@ export interface ModelAttributes {
 export interface PdpStylePreset {
   id: string;
   label: string;
+  /** Optional short description for workspace UI (e.g. White / Grey studio). */
+  description?: string;
   promptSnippet: string;
 }
 
