@@ -17,24 +17,25 @@ export const PDP_STYLE_PRESETS: PdpStylePreset[] = [
     description: 'Light grey or neutral backdrop, soft shadows. Feels a bit more premium than pure white, still very "shop" and on-model.',
     promptSnippet: 'Background: neutral grey studio sweep. Soft, even studio lighting. Professional product photography look.',
   },
-  {
-    id: 'gradient-sweep',
-    label: 'Gradient Sweep',
-    description: 'Seamless gradient background (e.g. light grey to white). No hard floor line, minimal distraction. Modern, premium e-commerce look.',
-    promptSnippet: 'Background: subtle gradient sweep (light grey to white or soft tone). Even, flattering studio lighting. Modern e-commerce style.',
-  },
-  {
-    id: 'lifestyle',
-    label: 'Lifestyle',
-    description: 'Model in a real-world setting (café, street, room). Good for brand storytelling and vibe; stronger on social than pure product.',
-    promptSnippet: 'Background: contextual lifestyle setting (e.g. minimal interior, soft natural light). Relaxed, aspirational mood. Lifestyle product shot.',
-  },
-  {
-    id: 'editorial',
-    label: 'Editorial',
-    description: 'Styled lighting, stronger shadows, magazine feel. Best for hero and campaign imagery when you want a bold, high-fashion look.',
-    promptSnippet: 'Background: editorial style (dramatic lighting, slight shadow, high contrast). Fashion editorial photography. Bold, magazine-quality look.',
-  },
+  // Supported later — start small with White + Grey only
+  // {
+  //   id: 'gradient-sweep',
+  //   label: 'Gradient Sweep',
+  //   description: 'Seamless gradient background (e.g. light grey to white). No hard floor line, minimal distraction. Modern, premium e-commerce look.',
+  //   promptSnippet: 'Background: subtle gradient sweep (light grey to white or soft tone). Even, flattering studio lighting. Modern e-commerce style.',
+  // },
+  // {
+  //   id: 'lifestyle',
+  //   label: 'Lifestyle',
+  //   description: 'Model in a real-world setting (café, street, room). Good for brand storytelling and vibe; stronger on social than pure product.',
+  //   promptSnippet: 'Background: contextual lifestyle setting (e.g. minimal interior, soft natural light). Relaxed, aspirational mood. Lifestyle product shot.',
+  // },
+  // {
+  //   id: 'editorial',
+  //   label: 'Editorial',
+  //   description: 'Styled lighting, stronger shadows, magazine feel. Best for hero and campaign imagery when you want a bold, high-fashion look.',
+  //   promptSnippet: 'Background: editorial style (dramatic lighting, slight shadow, high contrast). Fashion editorial photography. Bold, magazine-quality look.',
+  // },
 ];
 
 /**
