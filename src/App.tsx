@@ -132,7 +132,8 @@ const Logo = ({ className = "w-5 h-5" }: { className?: string }) => (
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('builder');
   const [attributes, setAttributes] = useState<ModelAttributes>(DEFAULT_ATTRIBUTES);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingModel, setIsGeneratingModel] = useState(false);
+  const [isGeneratingOutfit, setIsGeneratingOutfit] = useState(false);
   const [generatingProgress, setGeneratingProgress] = useState<{ current: number; total: number } | null>(null);
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>(() => {
     try {
@@ -376,7 +377,7 @@ REQUIREMENTS:
     }
 
     setValidationErrors([]);
-    setIsGenerating(true);
+    setIsGeneratingModel(true);
     setError(null);
 
     const firstStyleId = selectedStyleIds[0] ?? PDP_STYLE_PRESETS[0].id;
@@ -494,7 +495,7 @@ Keep every detail identical. Only change the pose/angle.`;
         setError(err.message || "Failed to generate image. Please try again.");
       }
     } finally {
-      setIsGenerating(false);
+      setIsGeneratingModel(false);
       setGeneratingProgress(null);
     }
   };
@@ -566,7 +567,7 @@ Keep every detail identical. Only change the pose/angle.`;
       return;
     }
     setDressModelError(null);
-    setIsGenerating(true);
+    setIsGeneratingOutfit(true);
     const batchId = Math.random().toString(36).substring(7);
     const skuName = dressModelSkuName.trim() || undefined;
     try {
@@ -629,7 +630,7 @@ Keep every detail identical. Only change the pose/angle.`;
       console.error('Dress from flat lay error:', err);
       setDressModelError(err?.message || 'Failed to generate. Try again.');
     } finally {
-      setIsGenerating(false);
+      setIsGeneratingOutfit(false);
       setGeneratingProgress(null);
     }
   };
@@ -902,12 +903,12 @@ Keep every detail identical. Only change the pose/angle.`;
           )}
           <motion.button 
             onClick={() => handleGenerate(false)}
-            disabled={isGenerating}
-            animate={validationErrors.length > 0 && !isGenerating ? { x: [0, -10, 10, -10, 10, 0] } : {}}
+            disabled={isGeneratingModel}
+            animate={validationErrors.length > 0 && !isGeneratingModel ? { x: [0, -10, 10, -10, 10, 0] } : {}}
             transition={{ duration: 0.4 }}
             className="krea-button w-full flex items-center justify-center gap-2 py-3"
           >
-            {isGenerating ? (
+            {isGeneratingModel ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 {generatingProgress ? `Generating ${generatingProgress.current}/${generatingProgress.total}...` : 'Generating...'}
@@ -1073,10 +1074,10 @@ Keep every detail identical. Only change the pose/angle.`;
                   )}
                   <button
                     onClick={() => handleDressFromFlatLay()}
-                    disabled={isGenerating || !flatLayDataUrl || !selectedBatch || anglePresetsList.length === 0}
+                    disabled={isGeneratingOutfit || !flatLayDataUrl || !selectedBatch || anglePresetsList.length === 0}
                     className="krea-button w-full flex items-center justify-center gap-2 py-3"
                   >
-                    {isGenerating && generatingProgress ? (
+                    {isGeneratingOutfit && generatingProgress ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
                         Generating {generatingProgress.current}/{generatingProgress.total}…
@@ -1182,7 +1183,7 @@ Keep every detail identical. Only change the pose/angle.`;
                 exit={{ opacity: 0, scale: 0.95 }}
                 className="h-full flex flex-col items-center justify-center max-w-4xl mx-auto"
               >
-                {!currentImage && !isGenerating ? (
+                {!currentImage && !isGeneratingModel ? (
                   <div className="text-center space-y-6">
                     <div className="w-24 h-24 bg-krea-input-bg rounded-3xl flex items-center justify-center mx-auto border border-krea-border">
                       <ImageIcon className="w-10 h-10 text-krea-muted" />
@@ -1196,7 +1197,7 @@ Keep every detail identical. Only change the pose/angle.`;
                   <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-12 items-stretch">
                     {/* Image Preview */}
                     <div className="relative aspect-square bg-krea-input-bg rounded-2xl overflow-hidden border border-krea-border shadow-2xl group min-h-0">
-                      {isGenerating ? (
+                      {isGeneratingModel ? (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-krea-bg/40 backdrop-blur-sm z-10">
                           <Loader2 className="w-10 h-10 animate-spin text-krea-text" />
                           <p className="text-sm font-medium animate-pulse text-krea-text">Crafting your model...</p>
@@ -1290,10 +1291,10 @@ Keep every detail identical. Only change the pose/angle.`;
                       <div className="flex gap-3 mt-auto pt-6">
                         <button 
                           onClick={() => handleGenerate(false)}
-                          disabled={isGenerating}
+                          disabled={isGeneratingModel}
                           className="flex-1 krea-button flex items-center justify-center gap-2"
                         >
-                          <RefreshCw className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
+                          <RefreshCw className={`w-4 h-4 ${isGeneratingModel ? 'animate-spin' : ''}`} />
                           Regenerate
                         </button>
                       </div>
