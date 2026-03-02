@@ -13,7 +13,9 @@ export interface GarmentSpec {
   notable_details: string;
 }
 
-const EXTRACTION_PROMPT = `Analyze this flat-lay garment image. Return ONLY valid JSON with these exact keys (no markdown, no code block):
+const EXTRACTION_PROMPT = `This image is the FRONT flat lay of the garment. The hem_length you report will be the single source of truth for all poses (front, three-quarter, back). Report length from this image only.
+
+Analyze this flat-lay garment image. Return ONLY valid JSON with these exact keys (no markdown, no code block):
 {
   "garment_type": "specific type, e.g. midi dress, cropped hoodie",
   "hem_length": "above knee | at knee | below knee | ankle | floor (for tops: waist | hip)",

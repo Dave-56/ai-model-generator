@@ -38,6 +38,29 @@ declare global {
   }
 }
 
+/** Extract base64 from a GeneratedImage (data URL or fetch remote). Used for dress-model ref and pre-fetch. */
+async function extractBase64FromImage(img: { url: string }): Promise<string | null> {
+  if (img.url.startsWith('data:')) {
+    return img.url.split(',')[1] ?? null;
+  }
+  if (img.url.startsWith('http')) {
+    try {
+      const res = await fetch(img.url);
+      const blob = await res.blob();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      return dataUrl.split(',')[1] ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 const DEFAULT_ATTRIBUTES: ModelAttributes = {
   name: '',
   gender: 'Female',
@@ -137,7 +160,7 @@ export default function App() {
   const [attributes, setAttributes] = useState<ModelAttributes>(DEFAULT_ATTRIBUTES);
   const [isGeneratingModel, setIsGeneratingModel] = useState(false);
   const [isGeneratingOutfit, setIsGeneratingOutfit] = useState(false);
-  const [generatingProgress, setGeneratingProgress] = useState<{ current: number; total: number } | null>(null);
+  const [generatingProgress, setGeneratingProgress] = useState<{ current: number; total: number; label?: string } | null>(null);
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>(() => {
     try {
       const saved = localStorage.getItem('nanobanana_models');
@@ -165,6 +188,8 @@ export default function App() {
   const [dressModelSkuName, setDressModelSkuName] = useState('');
   const [selectedDressBatchId, setSelectedDressBatchId] = useState<string | null>(null);
   const [dressModelError, setDressModelError] = useState<string | null>(null);
+  /** Pre-fetched model ref base64 for the selected dress batch; avoids delay when user clicks Generate. */
+  const dressModelRefCache = useRef<{ batchId: string; base64: string | null }>({ batchId: '', base64: null });
   const [selectedStyleIds, setSelectedStyleIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('nanobanana_pdp_presets');
@@ -245,6 +270,33 @@ export default function App() {
       }
     }
   }, [generatedImages]);
+
+  // Pre-fetch model ref base64 when selected dress batch changes so Generate starts faster
+  useEffect(() => {
+    const byBatch = new Map<string, GeneratedImage[]>();
+    for (const img of generatedImages) {
+      const bid = img.batchId ?? img.id;
+      if (!byBatch.has(bid)) byBatch.set(bid, []);
+      byBatch.get(bid)!.push(img);
+    }
+    const effectiveBatchId =
+      selectedDressBatchId ??
+      (currentImage ? (currentImage.batchId ?? currentImage.id) : null) ??
+      (generatedImages[0] ? (generatedImages[0].batchId ?? generatedImages[0].id) : null);
+    const batchImages: GeneratedImage[] = effectiveBatchId
+      ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp)
+      : [];
+    if (batchImages.length === 0) return;
+    const refFrontImg = batchImages.find((img) => img.angleId === 'front') ?? batchImages[0];
+    if (dressModelRefCache.current.batchId === effectiveBatchId && dressModelRefCache.current.base64) return;
+    let cancelled = false;
+    extractBase64FromImage(refFrontImg).then((base64) => {
+      if (!cancelled && base64) dressModelRefCache.current = { batchId: effectiveBatchId!, base64 };
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [generatedImages, selectedDressBatchId, currentImage?.id, currentImage?.batchId]);
 
   useEffect(() => {
     checkApiKey();
@@ -404,7 +456,9 @@ REQUIREMENTS:
 
     setValidationErrors([]);
     setIsGeneratingModel(true);
+    setCurrentImage(null);
     setError(null);
+    setViewMode('builder');
 
     const stylePresets = selectedStyleIds
       .map(id => PDP_STYLE_PRESETS.find(p => p.id === id))
@@ -413,8 +467,11 @@ REQUIREMENTS:
     const anglePresetsOrdered = ANGLE_PRESETS.filter(p => selectedAngleIds.includes(p.id));
     const anglePresetsList = anglePresetsOrdered.length > 0 ? anglePresetsOrdered : [ANGLE_PRESETS[0]];
     const totalImages = anglePresetsList.length * stylePresets.length;
+    const runId = Date.now().toString(36).slice(-6);
 
     try {
+      console.log(`[model-gen ${runId}] Starting: ${anglePresetsList.length} angle(s) × ${stylePresets.length} style(s) = ${totalImages} image(s)`);
+
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const batchId = Math.random().toString(36).substring(7);
       let workingAttributes = { ...attributes };
@@ -431,6 +488,9 @@ REQUIREMENTS:
           const stylePreset = stylePresets[si];
           imageCount++;
           setGeneratingProgress({ current: imageCount, total: totalImages });
+
+          const imageLabel = `${anglePreset.id}/${stylePreset.id} (${imageCount}/${totalImages})`;
+          console.log(`[model-gen ${runId}] Image ${imageLabel}: request start`);
 
           const isReference = firstGeneratedImage !== null;
           let prompt: string;
@@ -474,6 +534,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
             parts.push({ text: prompt });
           }
 
+          const tGen = performance.now();
           const response = await ai.models.generateContent({
             model: 'gemini-3.1-flash-image-preview',
             contents: { parts },
@@ -483,6 +544,13 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
               thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
             },
           });
+          const genMs = Math.round(performance.now() - tGen);
+          const usage = (response as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } }).usageMetadata;
+          if (usage) {
+            console.log(`[model-gen ${runId}] Image ${imageLabel}: done in ${genMs}ms | tokens: prompt=${usage.promptTokenCount ?? '?'} candidates=${usage.candidatesTokenCount ?? '?'} total=${usage.totalTokenCount ?? '?'}`);
+          } else {
+            console.log(`[model-gen ${runId}] Image ${imageLabel}: done in ${genMs}ms`);
+          }
 
           let imageUrl = '';
           for (const part of response.candidates?.[0]?.content?.parts || []) {
@@ -491,13 +559,24 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
               break;
             }
           }
-          if (!imageUrl) throw new Error("No image data returned from model.");
+          if (!imageUrl) {
+            const c0 = response.candidates?.[0];
+            const finishReason = c0?.finishReason ?? null;
+            console.warn(`[model-gen ${runId}] Image ${imageLabel} No image in response:`, {
+              candidatesLength: response.candidates?.length ?? 0,
+              finishReason,
+              partsLength: c0?.content?.parts?.length ?? 0,
+            });
+            throw new Error("No image data returned from model.");
+          }
 
+          const tCrop = performance.now();
           try {
             imageUrl = await cropToTargetAspectRatio(imageUrl, 2 / 3);
           } catch (_) {
             // keep uncropped if crop fails
           }
+          console.log(`[model-gen ${runId}] Image ${imageLabel}: crop in ${Math.round(performance.now() - tCrop)}ms`);
 
           let finalUrl = imageUrl;
           const uploadAvailable = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location?.hostname ?? '');
@@ -522,6 +601,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
           let estimatedAgeRange = workingAttributes.ageRange;
           if (!firstGeneratedImage) {
             try {
+              console.log(`[model-gen ${runId}] Image ${imageLabel}: age estimation start`);
               const ageResponse = await ai.models.generateContent({
                 model: 'gemini-3.1-flash-image-preview',
                 contents: {
@@ -534,7 +614,10 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
               const ageText = (ageResponse.candidates?.[0]?.content?.parts?.[0] as { text?: string })?.text?.trim() || '';
               const match = OPTIONS.ageRanges.find(r => ageText.includes(r));
               if (match) estimatedAgeRange = match;
-            } catch (_) {}
+              console.log(`[model-gen ${runId}] Image ${imageLabel}: age estimation done → ${estimatedAgeRange}`);
+            } catch (e) {
+              console.warn(`[model-gen ${runId}] Image ${imageLabel}: age estimation failed`, e);
+            }
           }
           workingAttributes = { ...workingAttributes, ageRange: estimatedAgeRange };
 
@@ -555,10 +638,11 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
           setCurrentImage(newImage);
         }
       }
+      console.log(`[model-gen ${runId}] Finished: ${totalImages} image(s)`);
       if (firstGeneratedImage) setCurrentImage(firstGeneratedImage);
       setAttributes(prev => ({ ...prev, name: '' }));
     } catch (err: any) {
-      console.error("Generation error:", err);
+      console.error(`[model-gen ${runId}] Generation error:`, err?.message ?? err);
       if (err.message?.includes("Requested entity was not found")) {
         setHasApiKey(false);
         setError("API Key session expired. Please re-select your key.");
@@ -600,35 +684,19 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
     }
     const effectiveBatchId = selectedDressBatchId ?? (currentImage ? (currentImage.batchId ?? currentImage.id) : null) ?? (generatedImages[0] ? (generatedImages[0].batchId ?? generatedImages[0].id) : null);
     const batchImages: GeneratedImage[] = effectiveBatchId ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp) : [];
+    const batchSourceType = batchImages[0]?.sourceType;
+    console.log('[flat-lay] Batch selection:', {
+      selectedDressBatchId: selectedDressBatchId ?? null,
+      currentImageId: currentImage?.id ?? null,
+      currentImageBatchId: currentImage?.batchId ?? currentImage?.id ?? null,
+      currentImageSourceType: currentImage?.sourceType ?? null,
+      effectiveBatchId: effectiveBatchId ?? null,
+      batchImageCount: batchImages.length,
+      batchSourceType: batchSourceType ?? null,
+      isOutfitBatch: batchSourceType === 'flat_lay',
+    });
     if (batchImages.length === 0) {
       setDressModelError('Select a model first. Generate a model in the Model tab.');
-      return;
-    }
-
-    const extractBase64 = async (img: GeneratedImage): Promise<string | null> => {
-      if (img.url.startsWith('data:')) {
-        return img.url.split(',')[1] ?? null;
-      } else if (img.url.startsWith('http')) {
-        try {
-          const res = await fetch(img.url);
-          const blob = await res.blob();
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
-          return dataUrl.split(',')[1] ?? null;
-        } catch (_) {
-          return null;
-        }
-      }
-      return null;
-    };
-
-    const modelRefBase64 = await extractBase64(batchImages[0]);
-    if (!modelRefBase64) {
-      setDressModelError('Selected model image must be available (try re-generating the model).');
       return;
     }
 
@@ -639,9 +707,18 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
       setDressModelError('Invalid front flat lay image.');
       return;
     }
+    const flatLayBackMatch = flatLayBackDataUrl?.match(/^data:([^;]+);base64,(.+)$/);
+    const flatLayBackBase64 = flatLayBackMatch?.[2] ?? null;
+    const flatLayBackMime = (flatLayBackMatch?.[1] ?? 'image/png').toLowerCase();
+
+    // Angle-matched refs: use the model's front / three-quarter / back image per turn so pose matches.
+    const refFrontImg = batchImages.find((img) => img.angleId === 'front') ?? batchImages[0];
+    const refThreeQuarterImg = batchImages.find((img) => img.angleId === 'three-quarter') ?? refFrontImg;
+    const refBackImg = batchImages.find((img) => img.angleId === 'back') ?? refFrontImg;
 
     setDressModelError(null);
     setIsGeneratingOutfit(true);
+    setViewMode('outfit-gallery');
     const batchId = Math.random().toString(36).substring(7);
     const skuName = dressModelSkuName.trim() || undefined;
     const apiKey = process.env.GEMINI_API_KEY ?? '';
@@ -653,27 +730,38 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
 
     const runId = Date.now().toString(36).slice(-6);
     try {
-      console.log(`[flat-lay ${runId}] Starting: garment spec + 3 poses`);
+      console.log(`[flat-lay ${runId}] Starting: garment spec + angle-matched refs + 3 poses`);
 
-      setGeneratingProgress({ current: 0, total: 4 });
+      setGeneratingProgress({ current: 0, total: 4, label: 'Analyzing garment & preparing…' });
       const t0 = performance.now();
-      const spec = await extractGarmentSpec(flatLayFrontBase64, flatLayFrontMime, apiKey);
-      console.log(`[flat-lay ${runId}] Garment spec done in ${Math.round(performance.now() - t0)}ms`);
-
-      setGeneratingProgress({ current: 1, total: 4 });
-      let normalizedRefBase64: string;
-      const t1 = performance.now();
-      try {
-        normalizedRefBase64 = await normalizeReferenceImage(modelRefBase64, 'image/png');
-      } catch {
-        normalizedRefBase64 = modelRefBase64;
+      const [spec, frontB64, threeQuarterB64, backB64] = await Promise.all([
+        extractGarmentSpec(flatLayFrontBase64, flatLayFrontMime, apiKey),
+        dressModelRefCache.current.batchId === effectiveBatchId && dressModelRefCache.current.base64
+          ? Promise.resolve(dressModelRefCache.current.base64)
+          : extractBase64FromImage(refFrontImg),
+        extractBase64FromImage(refThreeQuarterImg),
+        extractBase64FromImage(refBackImg),
+      ]);
+      if (!frontB64) {
+        setDressModelError('Selected model image must be available (try re-generating the model).');
+        setIsGeneratingOutfit(false);
+        return;
       }
-      console.log(`[flat-lay ${runId}] Ref image normalize done in ${Math.round(performance.now() - t1)}ms`);
+      const [normalizedFrontRef, normalizedThreeQuarterRef, normalizedBackRef] = await Promise.all([
+        normalizeReferenceImage(frontB64, 'image/png').catch(() => frontB64),
+        normalizeReferenceImage(threeQuarterB64 ?? frontB64, 'image/png').catch(() => threeQuarterB64 ?? frontB64),
+        normalizeReferenceImage(backB64 ?? frontB64, 'image/png').catch(() => backB64 ?? frontB64),
+      ]);
+      if (dressModelRefCache.current.batchId === effectiveBatchId) {
+        dressModelRefCache.current = { batchId: effectiveBatchId, base64: frontB64 };
+      }
+      console.log(`[flat-lay ${runId}] Spec + refs done in ${Math.round(performance.now() - t0)}ms`);
 
       const ai = new GoogleGenAI({ apiKey });
       const genConfig = {
-        temperature: 0.4,
+        temperature: 0.2,
         imageConfig: { aspectRatio: '2:3' as const, imageSize: '1K' as const },
+        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
       };
       const chat = ai.chats.create({
         model: 'gemini-3.1-flash-image-preview',
@@ -687,29 +775,69 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
         { pose: 'back', angleId: 'back' },
       ];
 
-      function extractImageFromResponse(response: { candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string } }> } }> }): string {
+      function extractImageFromResponse(
+        response: { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ inlineData?: { data?: string }; text?: string }> } }> },
+        logPrefix: string
+      ): string {
         for (const part of response.candidates?.[0]?.content?.parts ?? []) {
           if (part.inlineData?.data) {
             return `data:image/png;base64,${part.inlineData.data}`;
           }
+        }
+        const c0 = response.candidates?.[0];
+        const finishReason = c0?.finishReason ?? null;
+        console.warn(`${logPrefix} No image in response:`, {
+          candidatesLength: response.candidates?.length ?? 0,
+          finishReason,
+          partsLength: c0?.content?.parts?.length ?? 0,
+          partTypes: (c0?.content?.parts ?? []).map((p) => ('inlineData' in p && p.inlineData ? 'inlineData' : 'text' in p ? 'text' : 'other')),
+        });
+        // Google's safety layer removed the generated image; no parts returned.
+        if (finishReason === 'IMAGE_SAFETY' || finishReason === 'SAFETY') {
+          const err = new Error('This image was filtered by safety filters. Try a different pose or reference.') as Error & { finishReason?: string };
+          err.finishReason = finishReason;
+          throw err;
         }
         throw new Error('No image data returned from model.');
       }
 
       const newImages: GeneratedImage[] = [];
 
+      const uploadAvailable = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location?.hostname ?? '');
+      let frontResultBase64: string | null = null;
       for (let i = 0; i < poses.length; i++) {
         const { pose, angleId } = poses[i];
-        setGeneratingProgress({ current: i + 2, total: 4 });
+        const isLongPose = i >= 1;
+        setGeneratingProgress({
+          current: i + 1,
+          total: 4,
+          label: isLongPose ? `Pose ${i + 1}/3 – may take 1–2 min` : undefined,
+        });
 
-        const promptText = buildPromptFromSpec(spec, pose, styleSnippet);
-        const message = pose === 'front'
-          ? [
-              { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
-              { inlineData: { data: normalizedRefBase64, mimeType: 'image/png' } },
-              { text: promptText },
-            ]
-          : [{ text: promptText }];
+        const hasLengthAnchor = pose !== 'front' && !!frontResultBase64;
+        const promptText = buildPromptFromSpec(spec, pose, styleSnippet, !!flatLayBackBase64, hasLengthAnchor, attributes.height);
+        // Turn 1: front flat lay + model ref + text. Turns 2/3: flat lay + model ref + length anchor (front result) + text.
+        const anchorPart = hasLengthAnchor ? [{ inlineData: { data: frontResultBase64!, mimeType: 'image/png' as const } }] : [];
+        const message =
+          pose === 'front'
+            ? [
+                { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
+                { inlineData: { data: normalizedFrontRef, mimeType: 'image/png' } },
+                { text: promptText },
+              ]
+            : pose === 'three-quarter'
+              ? [
+                  { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
+                  { inlineData: { data: normalizedThreeQuarterRef, mimeType: 'image/png' } },
+                  ...anchorPart,
+                  { text: promptText },
+                ]
+              : [
+                  { inlineData: { data: flatLayBackBase64 ?? flatLayFrontBase64, mimeType: (flatLayBackBase64 ? (flatLayBackMime === 'image/jpeg' ? 'image/jpeg' : 'image/png') : flatLayMime) as 'image/png' | 'image/jpeg' } },
+                  { inlineData: { data: normalizedBackRef, mimeType: 'image/png' } },
+                  ...anchorPart,
+                  { text: promptText },
+                ];
 
         const poseLabel = `${pose} (${i + 1}/3)`;
         console.log(`[flat-lay ${runId}] Pose ${poseLabel}: request start`);
@@ -726,7 +854,11 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
           console.log(`[flat-lay ${runId}] Pose ${poseLabel}: done in ${poseMs}ms`);
         }
 
-        let imageUrl = extractImageFromResponse(response);
+        let imageUrl = extractImageFromResponse(response, `[flat-lay ${runId}] Pose ${poseLabel}`);
+        // Capture front result base64 before crop — used as length anchor for turns 2/3
+        if (pose === 'front') {
+          frontResultBase64 = imageUrl.replace(/^data:[^;]+;base64,/, '');
+        }
         const tCrop = performance.now();
         try {
           imageUrl = await cropToTargetAspectRatio(imageUrl, 2 / 3);
@@ -735,33 +867,9 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
         }
         console.log(`[flat-lay ${runId}] Pose ${poseLabel}: crop in ${Math.round(performance.now() - tCrop)}ms`);
 
-        let finalUrl = imageUrl;
-        const tUpload = performance.now();
-        const uploadAvailable = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location?.hostname ?? '');
-        if (uploadAvailable) {
-          try {
-            const base64 = imageUrl.split(',')[1];
-            if (base64) {
-              const uploadRes = await fetch('/api/upload-image', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: base64 }),
-              });
-              if (uploadRes.ok) {
-                const { url } = await uploadRes.json();
-                if (url) finalUrl = url;
-              } else {
-                console.warn(`[flat-lay ${runId}] Pose ${poseLabel}: upload returned ${uploadRes.status}`);
-              }
-            }
-          } catch (e) {
-            console.warn(`[flat-lay ${runId}] Pose ${poseLabel}: upload failed`, e);
-          }
-        }
-        console.log(`[flat-lay ${runId}] Pose ${poseLabel}: upload in ${Math.round(performance.now() - tUpload)}ms`);
-        newImages.push({
+        const newImage: GeneratedImage = {
           id: Math.random().toString(36).substring(7),
-          url: finalUrl,
+          url: imageUrl,
           attributes: refImage.attributes,
           timestamp: Date.now(),
           prompt: promptText,
@@ -770,7 +878,27 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
           batchId,
           sourceType: 'flat_lay',
           skuName,
-        });
+        };
+        newImages.push(newImage);
+        if (uploadAvailable) {
+          const base64 = imageUrl.split(',')[1];
+          if (base64) {
+            fetch('/api/upload-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: base64 }),
+            })
+              .then((res) => (res.ok ? res.json() : null))
+              .then((data: { url?: string } | null) => {
+                if (data?.url) {
+                  setGeneratedImages((prev) =>
+                    prev.map((i) => (i.id === newImage.id ? { ...i, url: data.url! } : i))
+                  );
+                }
+              })
+              .catch((e) => console.warn(`[flat-lay ${runId}] Pose ${poseLabel}: upload failed`, e));
+          }
+        }
       }
 
       setGeneratedImages(prev => [...newImages, ...prev]);
@@ -826,22 +954,13 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
     <div className="flex h-screen bg-krea-bg overflow-hidden">
       {/* Sidebar */}
       <aside className="w-80 bg-krea-sidebar border-r border-krea-border flex flex-col z-20">
-        <div className="p-6 flex items-center justify-between border-b border-krea-border">
+        <div className="p-6 flex items-center border-b border-krea-border">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-krea-btn-bg rounded-lg flex items-center justify-center">
               <Logo className="w-5 h-5 text-krea-btn-text" />
             </div>
             <h1 className="text-xl font-display font-bold tracking-tight">Tiny Lemon</h1>
           </div>
-          {activeTab === 'model' && (
-            <button 
-              onClick={() => setAttributes(DEFAULT_ATTRIBUTES)}
-              className="p-2 text-krea-muted hover:text-white transition-colors"
-              title="Reset to Default"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          )}
         </div>
 
         {/* Tab bar: Dress model | Model | Brand style */}
@@ -1287,7 +1406,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                     {isGeneratingOutfit && generatingProgress ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        {generatingProgress.current === 0 ? 'Analyzing garment…' : generatingProgress.current === 1 ? 'Preparing…' : `Generating ${generatingProgress.current - 1}/3…`}
+                        {generatingProgress.label ?? (generatingProgress.current === 0 ? 'Analyzing garment…' : generatingProgress.current === 1 ? 'Preparing…' : `Generating ${generatingProgress.current}/3…`)}
                       </>
                     ) : (
                       'Dress model (3 images)'
@@ -1588,11 +1707,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                           <Loader2 className="w-12 h-12 text-krea-text animate-spin mx-auto" />
                           <p className="text-krea-text font-medium">
                             {generatingProgress
-                              ? generatingProgress.current === 0
-                                ? 'Analyzing garment…'
-                                : generatingProgress.current === 1
-                                  ? 'Preparing…'
-                                  : `Generating pose ${generatingProgress.current - 1}/3…`
+                              ? generatingProgress.label ?? (generatingProgress.current === 0 ? 'Analyzing garment…' : generatingProgress.current === 1 ? 'Preparing…' : `Generating pose ${generatingProgress.current}/3…`)
                               : 'Generating…'}
                           </p>
                           <p className="text-sm text-krea-muted">Your model-in-outfit shots will appear here when ready.</p>
@@ -1624,6 +1739,19 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                           Clear All
                         </button>
                       </div>
+                      {isGeneratingOutfit && (
+                        <div className="space-y-2">
+                          <div className="aspect-[2/3] bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border border-dashed flex flex-col items-center justify-center gap-3 p-4">
+                            <Loader2 className="w-10 h-10 text-krea-text animate-spin shrink-0" />
+                            <p className="text-sm font-medium text-krea-text text-center">
+                              {generatingProgress
+                                ? generatingProgress.label ?? (generatingProgress.current === 0 ? 'Analyzing garment…' : generatingProgress.current === 1 ? 'Preparing…' : `Generating pose ${generatingProgress.current}/3…`)
+                                : 'Generating…'}
+                            </p>
+                            <p className="text-xs text-krea-muted text-center">New outfit will appear here</p>
+                          </div>
+                        </div>
+                      )}
                       {batches.map(({ batchId, images }) => {
                         const idx = galleryBatchIndex[batchId] ?? 0;
                         const currentImg = images[Math.min(idx, images.length - 1)];
@@ -1687,7 +1815,6 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                                 Flat lay{images[0]?.skuName ? ` · ${images[0].skuName}` : ''}
                               </p>
                               <p className="font-medium text-krea-text truncate">{currentImg.attributes?.name || 'Unnamed'}</p>
-                              <p className="text-sm text-krea-muted truncate">{currentImg.attributes?.ethnicity || '—'}</p>
                             </div>
                           </div>
                         );

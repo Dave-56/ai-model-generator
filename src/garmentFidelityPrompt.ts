@@ -124,23 +124,59 @@ export function generateGarmentFidelityPrompt(
 /** Pose identifiers for the multi-turn chat flow (no anchor). */
 export type SpecPose = 'front' | 'three-quarter' | 'back';
 
+const FRAMING_BLOCK =
+  'Full body from head to toe. Do not crop the head or feet; the entire body must be visible. 2:3 portrait framing. Center the model with even margins on all sides.';
+
+/** Length + lighting rules: front flat lay is source of truth for hem; match reference lighting. */
+function lengthAndLightingBlock(spec: GarmentSpec, hasBackFlatLay: boolean, pose: SpecPose): string {
+  const lengthLine = `Hem length (source of truth): ${spec.hem_length}, from the front flat lay only. Use this exact length for this pose.`;
+  const backNote =
+    pose === 'back' && hasBackFlatLay
+      ? ' If a back flat lay is provided, use it only for back design details (e.g. neckline, zipper); do not use it for garment length.'
+      : '';
+  const lightingLine =
+    'Lighting and background: match the model reference image exactly — same background, same soft even lighting. Keep lighting identical across all poses.';
+  return `${lengthLine}${backNote} ${lightingLine}`;
+}
+
 /**
  * Build a short structured prompt from garment spec for one pose.
  * Used in multi-turn chat: turn 1 = front (with images), turn 2 = three-quarter, turn 3 = back.
+ * @param hasBackFlatLay when true and pose is back, instructs to use back flat lay only for design, not length
  */
 export function buildPromptFromSpec(
   spec: GarmentSpec,
   pose: SpecPose,
-  styleSnippet: string
+  styleSnippet: string,
+  hasBackFlatLay = false,
+  hasLengthAnchor = false,
+  modelHeight?: string,
 ): string {
   const colors = spec.primary_colors.length ? spec.primary_colors.join(' ') : 'neutral';
-  const base = `Photo of the person in the reference image wearing a ${colors} ${spec.fit}-fit ${spec.silhouette} ${spec.garment_type}, ${spec.sleeve_length} sleeves, hem ${spec.hem_length}${spec.notable_details ? `, ${spec.notable_details}` : ''}.`;
+  const heightNote = modelHeight ? ` The model is ${modelHeight} tall.` : '';
+  const base = `Photo of the person in the reference image wearing a ${colors} ${spec.fit}-fit ${spec.silhouette} ${spec.garment_type}, ${spec.sleeve_length} sleeves, hem ${spec.hem_length}${spec.notable_details ? `, ${spec.notable_details}` : ''}.${heightNote}`;
+  const tail = lengthAndLightingBlock(spec, hasBackFlatLay, pose);
+
   if (pose === 'front') {
-    return `${base} Standing facing camera, neutral pose, arms relaxed at sides. Full body, ${styleSnippet}`;
+    return `${base} Standing facing camera, neutral pose, arms relaxed at sides. Full body, ${styleSnippet}. ${FRAMING_BLOCK} ${tail}`;
   }
+
+  // For turns 2/3, prepend an image enumeration header when a length anchor is provided
+  let anchorHeader = '';
+  if (hasLengthAnchor) {
+    const isBackWithBackFlatLay = pose === 'back' && hasBackFlatLay;
+    const img1Desc = isBackWithBackFlatLay
+      ? 'The BACK flat lay garment photo — source for back garment details (neckline, zipper, back design). Do NOT use this for garment length.'
+      : 'The FRONT flat lay garment photo — source for garment details.';
+    anchorHeader =
+      `You are given 3 images:\n` +
+      `1) ${img1Desc}\n` +
+      `2) The model reference photo — source for identity and pose.\n` +
+      `3) A front-view result of this model already wearing this garment — use STRICTLY as a length and fit reference. The garment hem MUST end at the EXACT same point on the legs as shown in image 3. Match the garment's tightness/looseness of fit. Do NOT copy the pose or angle from image 3.\n\n`;
+  }
+
   if (pose === 'three-quarter') {
-    return `Now generate the same model wearing the exact same garment. Standing turned 30 degrees to the right, face looking toward camera. Maintain identical garment length, fit, and silhouette.`;
+    return `${anchorHeader}Same person, same garment. 30° right, face to camera. Same length and fit. ${FRAMING_BLOCK} ${tail}`;
   }
-  // back
-  return `Now generate the same model wearing the exact same garment. Standing with back to camera, head turned slightly to the right. Maintain identical garment length, fit, and silhouette.`;
+  return `${anchorHeader}Same person, same garment. Back to camera. Head MUST be turned to one side looking over shoulder (angled, profile visible) — do NOT have head facing straight forward. Same length and fit. ${FRAMING_BLOCK} ${tail}`;
 }

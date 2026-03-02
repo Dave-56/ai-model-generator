@@ -56,6 +56,6 @@ export const ANGLE_PRESETS: AnglePreset[] = [
   {
     id: 'back',
     label: 'Back',
-    promptSnippet: 'Back view: model facing away from camera. Full body from behind visible. Same confident posture.',
+    promptSnippet: 'Standing with back to camera. Head rotated 45 degrees to the right, chin over right shoulder, right side of face clearly visible in profile. Left ear NOT visible. Full body from behind visible. Same confident posture.',
   },
 ];
