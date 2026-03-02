@@ -1226,7 +1226,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                   </div>
                 <div className="space-y-2">
                   <label className="text-sm text-krea-muted">Angles (for each PDP)</label>
-                  <p className="text-[10px] text-krea-muted">Same model in these poses per SKU — e.g. front, 3/4, back.</p>
+                  <p className="text-[10px] text-krea-muted">Same model in these poses per outfit — e.g. front, 3/4, back.</p>
                   <div className="space-y-2">
                     {ANGLE_PRESETS.map((p) => (
                       <label key={p.id} className="flex items-center gap-2 cursor-pointer">
@@ -1361,13 +1361,13 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-sm text-krea-muted">SKU (optional)</label>
+                    <label className="text-sm text-krea-muted">Outfit name (optional)</label>
                     <input
                       type="text"
                       value={dressModelSkuName}
                       onChange={(e) => setDressModelSkuName(e.target.value)}
                       className="krea-input w-full"
-                      placeholder="e.g. TSH-001"
+                      placeholder="e.g. Satin Slip Dress"
                     />
                   </div>
                   <div className="space-y-1.5">
