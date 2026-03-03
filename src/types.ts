@@ -38,6 +38,34 @@ export interface GeneratedImage {
   sourceType?: 'model_only' | 'flat_lay';
   /** Optional SKU label (for flat-lay runs); display/badges and future batch. */
   skuName?: string;
+  /** Links this image back to its BatchOutfitItem.id so it can be re-generated individually. */
+  outfitQueueId?: string;
+}
+
+export interface BatchOutfitItem {
+  id: string;
+  frontFile: File;
+  frontThumbUrl: string;
+  frontFilename: string;
+  backFile: File | null;
+  backThumbUrl: string | null;
+  skuName: string;
+  /** Per-outfit style override; defaults to selectedStyleIds[0] at creation time. */
+  styleId?: string;
+  /** Cached garment spec from Phase 1 extraction; used for single-pose regen. */
+  garmentSpec?: import('./garmentSpec').GarmentSpec;
+  status: 'pending' | 'extracting' | 'generating' | 'done' | 'error';
+  currentPose: number;
+  errorMessage: string | null;
+}
+
+export interface BatchProgress {
+  currentOutfit: number;
+  totalOutfits: number;
+  currentPose: number;
+  totalPoses: number;
+  label: string;
+  phase: 'extracting' | 'generating';
 }
 
 export type ViewMode = 'builder' | 'gallery' | 'outfit-gallery';

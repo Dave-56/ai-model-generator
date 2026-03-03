@@ -1,18 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Sparkles, 
-  History, 
-  Settings, 
-  User, 
-  Plus, 
-  Download, 
-  Trash2, 
-  ChevronRight, 
+import {
+  Sparkles,
+  History,
+  Settings,
+  User,
+  Plus,
+  Download,
+  Trash2,
+  ChevronRight,
   ChevronLeft,
-  Loader2, 
+  Loader2,
   Image as ImageIcon,
   RefreshCw,
+  RotateCw,
   Copy,
   Check,
   Sun,
@@ -21,7 +22,7 @@ import {
   X
 } from 'lucide-react';
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
-import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset } from './types';
+import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset, BatchOutfitItem, BatchProgress } from './types';
 import { PDP_STYLE_PRESETS, ANGLE_PRESETS } from './pdpPresets';
 import { buildPromptFromSpec } from './garmentFidelityPrompt';
 import { normalizeReferenceImage } from './normalizeReferenceImage';
@@ -155,6 +156,61 @@ const Logo = ({ className = "w-5 h-5" }: { className?: string }) => (
   </svg>
 );
 
+/** Extract first image from a Gemini response; throws on safety filter or missing image. */
+function extractImageFromResponse(
+  response: { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ inlineData?: { data?: string }; text?: string }> } }> },
+  logPrefix: string
+): string {
+  for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+    if (part.inlineData?.data) {
+      return `data:image/png;base64,${part.inlineData.data}`;
+    }
+  }
+  const c0 = response.candidates?.[0];
+  const finishReason = c0?.finishReason ?? null;
+  console.warn(`${logPrefix} No image in response:`, {
+    candidatesLength: response.candidates?.length ?? 0,
+    finishReason,
+    partsLength: c0?.content?.parts?.length ?? 0,
+    partTypes: (c0?.content?.parts ?? []).map((p) => ('inlineData' in p && p.inlineData ? 'inlineData' : 'text' in p ? 'text' : 'other')),
+  });
+  if (finishReason === 'IMAGE_SAFETY' || finishReason === 'SAFETY') {
+    const err = new Error('This image was filtered by safety filters. Try a different pose or reference.') as Error & { finishReason?: string };
+    err.finishReason = finishReason;
+    throw err;
+  }
+  throw new Error('No image data returned from model.');
+}
+
+/** Convert a filename to a readable outfit name: strip extension, remove suffixes like "(1)", title-case. */
+function outfitNameFromFilename(filename: string): string {
+  return filename
+    .replace(/\.[^.]+$/, '')          // strip extension
+    .replace(/\s*\(\d+\)\s*$/, '')    // remove "(1)" suffix
+    .replace(/[-_]/g, ' ')            // dashes/underscores → spaces
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase()); // title-case
+}
+
+/** Read a File to base64 lazily (at generation time, not at queue time). */
+function readFileAsBase64(file: File): Promise<{ base64: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        resolve({ base64: match[2], mimeType: match[1] });
+      } else {
+        reject(new Error('Failed to read file as base64'));
+      }
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('builder');
   const [attributes, setAttributes] = useState<ModelAttributes>(DEFAULT_ATTRIBUTES);
@@ -179,17 +235,19 @@ export default function App() {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   /** Per-batch index for gallery carousel (which pose is shown in each card). */
   const [galleryBatchIndex, setGalleryBatchIndex] = useState<Record<string, number>>({});
+  /** Keys of individual poses currently being regenerated: "${galleryBatchId}__${angleId}" */
+  const [regenPoses, setRegenPoses] = useState<Set<string>>(new Set());
 
   // Brand PDP style (separate from model). Multi-select; used for fashion PDP photoshoots.
   const [activeTab, setActiveTab] = useState<'model' | 'brand-style' | 'dress-model'>('model');
-  // Dress model (flat lay) flow: front flat lay (required) + optional back flat lay.
-  const [flatLayFrontDataUrl, setFlatLayFrontDataUrl] = useState<string | null>(null);
-  const [flatLayBackDataUrl, setFlatLayBackDataUrl] = useState<string | null>(null);
-  const [dressModelSkuName, setDressModelSkuName] = useState('');
+  // Batch dress model (flat lay) flow: multiple front flat lays queued.
+  const [batchOutfits, setBatchOutfits] = useState<BatchOutfitItem[]>([]);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
   const [selectedDressBatchId, setSelectedDressBatchId] = useState<string | null>(null);
   const [dressModelError, setDressModelError] = useState<string | null>(null);
   /** Pre-fetched model ref base64 for the selected dress batch; avoids delay when user clicks Generate. */
   const dressModelRefCache = useRef<{ batchId: string; base64: string | null }>({ batchId: '', base64: null });
+  const cancelBatchRef = useRef(false);
   const [selectedStyleIds, setSelectedStyleIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('nanobanana_pdp_presets');
@@ -671,71 +729,293 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
     }
   };
 
-  const handleDressFromFlatLay = async () => {
-    if (!hasApiKey || !flatLayFrontDataUrl) {
-      setDressModelError('Upload a front flat lay image.');
+  // ── Batch queue handlers ──────────────────────────────────────────
+  const handleBatchFrontUpload = (files: FileList | File[]) => {
+    const arr = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    setBatchOutfits((prev) => {
+      const remaining = 10 - prev.length;
+      const toAdd = arr.slice(0, remaining);
+      return [
+        ...prev,
+        ...toAdd.map((file) => ({
+          id: Math.random().toString(36).substring(2, 9),
+          frontFile: file,
+          frontThumbUrl: URL.createObjectURL(file),
+          frontFilename: file.name,
+          backFile: null,
+          backThumbUrl: null,
+          skuName: outfitNameFromFilename(file.name),
+          styleId: selectedStyleIds[0],
+          status: 'pending' as const,
+          currentPose: 0,
+          errorMessage: null,
+        })),
+      ];
+    });
+    setDressModelError(null);
+  };
+
+  const handleBackUpload = (outfitId: string, file: File) => {
+    setBatchOutfits((prev) =>
+      prev.map((o) =>
+        o.id === outfitId
+          ? { ...o, backFile: file, backThumbUrl: URL.createObjectURL(file) }
+          : o
+      )
+    );
+  };
+
+  const handleRemoveOutfit = (outfitId: string) => {
+    setBatchOutfits((prev) => {
+      const item = prev.find((o) => o.id === outfitId);
+      if (item) {
+        URL.revokeObjectURL(item.frontThumbUrl);
+        if (item.backThumbUrl) URL.revokeObjectURL(item.backThumbUrl);
+      }
+      return prev.filter((o) => o.id !== outfitId);
+    });
+  };
+
+  const handleRemoveBack = (outfitId: string) => {
+    setBatchOutfits((prev) =>
+      prev.map((o) => {
+        if (o.id === outfitId && o.backThumbUrl) {
+          URL.revokeObjectURL(o.backThumbUrl);
+          return { ...o, backFile: null, backThumbUrl: null };
+        }
+        return o;
+      })
+    );
+  };
+
+  const handleUpdateSkuName = (outfitId: string, name: string) => {
+    setBatchOutfits((prev) =>
+      prev.map((o) => (o.id === outfitId ? { ...o, skuName: name } : o))
+    );
+  };
+
+  const handleUpdateOutfitStyle = (outfitId: string, styleId: string) => {
+    setBatchOutfits((prev) =>
+      prev.map((o) => (o.id === outfitId ? { ...o, styleId } : o))
+    );
+  };
+
+  const handleRetryFailed = () => {
+    setBatchOutfits((prev) =>
+      prev.map((o) =>
+        o.status === 'error'
+          ? { ...o, status: 'pending' as const, currentPose: 0, errorMessage: null }
+          : o
+      )
+    );
+  };
+
+  const handleRedoOutfit = (galleryBatchId: string) => {
+    const link = generatedImages.find(
+      (i) => (i.batchId ?? i.id) === galleryBatchId && i.outfitQueueId
+    );
+    if (!link?.outfitQueueId) return;
+    const queueId = link.outfitQueueId;
+    // Remove existing images for this gallery card
+    setGeneratedImages((prev) => prev.filter((i) => (i.batchId ?? i.id) !== galleryBatchId));
+    if (currentImage && (currentImage.batchId ?? currentImage.id) === galleryBatchId) setCurrentImage(null);
+    setGalleryBatchIndex((prev) => { const next = { ...prev }; delete next[galleryBatchId]; return next; });
+    // Reset sidebar status so the outfit shows as in-progress again
+    setBatchOutfits((prev) =>
+      prev.map((o) => (o.id === queueId ? { ...o, status: 'pending' as const, currentPose: 0, errorMessage: null } : o))
+    );
+    // Run generation for only this outfit
+    handleBatchDressFromFlatLay(queueId);
+  };
+
+  const handleRegeneratePose = async (galleryBatchId: string, angleId: string) => {
+    const key = `${galleryBatchId}__${angleId}`;
+
+    // Find which queue item owns this gallery card
+    const link = generatedImages.find((i) => (i.batchId ?? i.id) === galleryBatchId && i.outfitQueueId);
+    if (!link?.outfitQueueId) return;
+    const outfit = batchOutfits.find((o) => o.id === link.outfitQueueId);
+    if (!outfit) return; // session expired — queue item gone
+
+    setRegenPoses((prev) => { const next = new Set(prev); next.add(key); return next; });
+
+    try {
+      // Resolve model ref images (same logic as handleBatchDressFromFlatLay)
+      const byBatch = new Map<string, GeneratedImage[]>();
+      for (const img of generatedImages) {
+        const bid = img.batchId ?? img.id;
+        if (!byBatch.has(bid)) byBatch.set(bid, []);
+        byBatch.get(bid)!.push(img);
+      }
+      const modelOnly = generatedImages.filter((img) => img.sourceType !== 'flat_lay');
+      const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay'
+        ? (currentImage.batchId ?? currentImage.id)
+        : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
+      const effectiveBatchId = selectedDressBatchId ?? defaultBatchId;
+      const batchImages: GeneratedImage[] = effectiveBatchId
+        ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp)
+        : [];
+      if (batchImages.length === 0) return;
+
+      const refFrontImg = batchImages.find((img) => img.angleId === 'front') ?? batchImages[0];
+      const refThreeQuarterImg = batchImages.find((img) => img.angleId === 'three-quarter') ?? refFrontImg;
+      const refBackImg = batchImages.find((img) => img.angleId === 'back') ?? refFrontImg;
+
+      const [frontB64, threeQuarterB64, backB64] = await Promise.all([
+        dressModelRefCache.current.batchId === effectiveBatchId && dressModelRefCache.current.base64
+          ? Promise.resolve(dressModelRefCache.current.base64)
+          : extractBase64FromImage(refFrontImg),
+        extractBase64FromImage(refThreeQuarterImg),
+        extractBase64FromImage(refBackImg),
+      ]);
+      if (!frontB64) return;
+      const [normalizedFrontRef, normalizedThreeQuarterRef, normalizedBackRef] = await Promise.all([
+        normalizeReferenceImage(frontB64, 'image/png').catch(() => frontB64),
+        normalizeReferenceImage(threeQuarterB64 ?? frontB64, 'image/png').catch(() => threeQuarterB64 ?? frontB64),
+        normalizeReferenceImage(backB64 ?? frontB64, 'image/png').catch(() => backB64 ?? frontB64),
+      ]);
+
+      // Resolve garment spec — use cached or re-extract
+      const apiKey = process.env.GEMINI_API_KEY ?? '';
+      let spec = outfit.garmentSpec;
+      if (!spec) {
+        const { base64, mimeType } = await readFileAsBase64(outfit.frontFile);
+        spec = await extractGarmentSpec(base64, mimeType, apiKey);
+        setBatchOutfits((prev) => prev.map((o) => (o.id === outfit.id ? { ...o, garmentSpec: spec } : o)));
+      }
+
+      // Per-outfit style
+      const stylePreset = PDP_STYLE_PRESETS.find((p) => p.id === (outfit.styleId ?? selectedStyleIds[0])) ?? PDP_STYLE_PRESETS[0];
+      const styleSnippet = stylePreset.promptSnippet;
+
+      // Read flat lay files
+      const { base64: flatLayFrontBase64, mimeType: flatLayFrontMime } = await readFileAsBase64(outfit.frontFile);
+      const flatLayMime = flatLayFrontMime === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+      let flatLayBackBase64: string | null = null;
+      let flatLayBackMime = 'image/png';
+      if (outfit.backFile) {
+        const backData = await readFileAsBase64(outfit.backFile);
+        flatLayBackBase64 = backData.base64;
+        flatLayBackMime = backData.mimeType;
+      }
+
+      // For 3/4 and back poses: get existing front result as length anchor
+      const existingFrontImg = generatedImages.find(
+        (img) => (img.batchId ?? img.id) === galleryBatchId && img.angleId === 'front'
+      );
+      const frontResultBase64 = existingFrontImg ? await extractBase64FromImage(existingFrontImg) : null;
+      const hasLengthAnchor = (angleId === 'three-quarter' || angleId === 'back') && !!frontResultBase64;
+      const anchorPart = hasLengthAnchor ? [{ inlineData: { data: frontResultBase64!, mimeType: 'image/png' as const } }] : [];
+
+      const pose = angleId as 'front' | 'three-quarter' | 'back';
+      const promptText = buildPromptFromSpec(spec, pose, styleSnippet, !!flatLayBackBase64, hasLengthAnchor, batchImages[0]?.attributes?.height);
+
+      const message =
+        pose === 'front'
+          ? [
+              { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
+              { inlineData: { data: normalizedFrontRef, mimeType: 'image/png' } },
+              { text: promptText },
+            ]
+          : pose === 'three-quarter'
+            ? [
+                { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
+                { inlineData: { data: normalizedThreeQuarterRef, mimeType: 'image/png' } },
+                ...anchorPart,
+                { text: promptText },
+              ]
+            : [
+                { inlineData: { data: flatLayBackBase64 ?? flatLayFrontBase64, mimeType: (flatLayBackBase64 ? (flatLayBackMime === 'image/jpeg' ? 'image/jpeg' : 'image/png') : flatLayMime) as 'image/png' | 'image/jpeg' } },
+                { inlineData: { data: normalizedBackRef, mimeType: 'image/png' } },
+                ...anchorPart,
+                { text: promptText },
+              ];
+
+      const ai = new GoogleGenAI({ apiKey });
+      const genConfig = {
+        temperature: 0.2,
+        imageConfig: { aspectRatio: '2:3' as const, imageSize: '1K' as const },
+        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+      };
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-image-preview',
+        config: genConfig,
+        contents: [{ role: 'user', parts: message }],
+      });
+
+      let imageUrl = extractImageFromResponse(response, `[regen-pose ${galleryBatchId} ${angleId}]`);
+      try {
+        imageUrl = await cropToTargetAspectRatio(imageUrl, 2 / 3);
+      } catch (_) {}
+
+      // Replace the matching image in the gallery, preserving its id
+      setGeneratedImages((prev) =>
+        prev.map((img) => {
+          if ((img.batchId ?? img.id) === galleryBatchId && img.angleId === angleId) {
+            return {
+              ...img,
+              url: imageUrl,
+              prompt: promptText,
+              timestamp: Date.now(),
+              styleId: stylePreset.id,
+            };
+          }
+          return img;
+        })
+      );
+    } finally {
+      setRegenPoses((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  };
+
+  const cancelGeneration = () => {
+    cancelBatchRef.current = true;
+  };
+
+  const handleBatchDressFromFlatLay = async (singleOutfitId?: string) => {
+    const pendingOutfits = singleOutfitId
+      ? batchOutfits.filter((o) => o.id === singleOutfitId)
+      : batchOutfits.filter((o) => o.status === 'pending' || o.status === 'error');
+    if (!hasApiKey || pendingOutfits.length === 0) {
+      setDressModelError('Upload at least one front flat lay image.');
       return;
     }
+    // Resolve model batch
     const byBatch = new Map<string, GeneratedImage[]>();
     for (const img of generatedImages) {
       const bid = img.batchId ?? img.id;
       if (!byBatch.has(bid)) byBatch.set(bid, []);
       byBatch.get(bid)!.push(img);
     }
-    const effectiveBatchId = selectedDressBatchId ?? (currentImage ? (currentImage.batchId ?? currentImage.id) : null) ?? (generatedImages[0] ? (generatedImages[0].batchId ?? generatedImages[0].id) : null);
-    const batchImages: GeneratedImage[] = effectiveBatchId ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp) : [];
-    const batchSourceType = batchImages[0]?.sourceType;
-    console.log('[flat-lay] Batch selection:', {
-      selectedDressBatchId: selectedDressBatchId ?? null,
-      currentImageId: currentImage?.id ?? null,
-      currentImageBatchId: currentImage?.batchId ?? currentImage?.id ?? null,
-      currentImageSourceType: currentImage?.sourceType ?? null,
-      effectiveBatchId: effectiveBatchId ?? null,
-      batchImageCount: batchImages.length,
-      batchSourceType: batchSourceType ?? null,
-      isOutfitBatch: batchSourceType === 'flat_lay',
-    });
+    const modelOnly = generatedImages.filter((img) => img.sourceType !== 'flat_lay');
+    const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay'
+      ? (currentImage.batchId ?? currentImage.id)
+      : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
+    const effectiveBatchId = selectedDressBatchId ?? defaultBatchId;
+    const batchImages: GeneratedImage[] = effectiveBatchId
+      ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp)
+      : [];
     if (batchImages.length === 0) {
       setDressModelError('Select a model first. Generate a model in the Model tab.');
       return;
     }
 
-    const flatLayFrontMatch = flatLayFrontDataUrl.match(/^data:([^;]+);base64,(.+)$/);
-    const flatLayFrontBase64 = flatLayFrontMatch?.[2] ?? null;
-    const flatLayFrontMime = (flatLayFrontMatch?.[1] ?? 'image/png').toLowerCase();
-    if (!flatLayFrontBase64) {
-      setDressModelError('Invalid front flat lay image.');
-      return;
-    }
-    const flatLayBackMatch = flatLayBackDataUrl?.match(/^data:([^;]+);base64,(.+)$/);
-    const flatLayBackBase64 = flatLayBackMatch?.[2] ?? null;
-    const flatLayBackMime = (flatLayBackMatch?.[1] ?? 'image/png').toLowerCase();
-
-    // Angle-matched refs: use the model's front / three-quarter / back image per turn so pose matches.
     const refFrontImg = batchImages.find((img) => img.angleId === 'front') ?? batchImages[0];
     const refThreeQuarterImg = batchImages.find((img) => img.angleId === 'three-quarter') ?? refFrontImg;
     const refBackImg = batchImages.find((img) => img.angleId === 'back') ?? refFrontImg;
 
     setDressModelError(null);
     setIsGeneratingOutfit(true);
+    cancelBatchRef.current = false;
     setViewMode('outfit-gallery');
-    const batchId = Math.random().toString(36).substring(7);
-    const skuName = dressModelSkuName.trim() || undefined;
+
     const apiKey = process.env.GEMINI_API_KEY ?? '';
-    const stylePreset = selectedStyleIds.length > 0
-      ? PDP_STYLE_PRESETS.find(p => p.id === selectedStyleIds[0]) ?? PDP_STYLE_PRESETS[0]
-      : PDP_STYLE_PRESETS[0];
-    const styleSnippet = stylePreset.promptSnippet;
     const refImage = batchImages[0];
-
     const runId = Date.now().toString(36).slice(-6);
-    try {
-      console.log(`[flat-lay ${runId}] Starting: garment spec + angle-matched refs + 3 poses`);
 
-      setGeneratingProgress({ current: 0, total: 4, label: 'Analyzing garment & preparing…' });
-      const t0 = performance.now();
-      const [spec, frontB64, threeQuarterB64, backB64] = await Promise.all([
-        extractGarmentSpec(flatLayFrontBase64, flatLayFrontMime, apiKey),
+    try {
+      // ── Resolve model refs once (shared across all outfits) ──
+      const [frontB64, threeQuarterB64, backB64] = await Promise.all([
         dressModelRefCache.current.batchId === effectiveBatchId && dressModelRefCache.current.base64
           ? Promise.resolve(dressModelRefCache.current.base64)
           : extractBase64FromImage(refFrontImg),
@@ -753,165 +1033,248 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
         normalizeReferenceImage(backB64 ?? frontB64, 'image/png').catch(() => backB64 ?? frontB64),
       ]);
       if (dressModelRefCache.current.batchId === effectiveBatchId) {
-        dressModelRefCache.current = { batchId: effectiveBatchId, base64: frontB64 };
+        dressModelRefCache.current = { batchId: effectiveBatchId!, base64: frontB64 };
       }
-      console.log(`[flat-lay ${runId}] Spec + refs done in ${Math.round(performance.now() - t0)}ms`);
 
-      const ai = new GoogleGenAI({ apiKey });
-      const genConfig = {
-        temperature: 0.2,
-        imageConfig: { aspectRatio: '2:3' as const, imageSize: '1K' as const },
-        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-      };
-      const chat = ai.chats.create({
-        model: 'gemini-3.1-flash-image-preview',
-        config: genConfig,
+      // ── Phase 1: Concurrency-capped spec extraction (3 at a time) ──
+      const CONCURRENCY = 3;
+      const GEN_CONCURRENCY = 2;
+      const specMap = new Map<string, Awaited<ReturnType<typeof extractGarmentSpec>>>();
+      const pendingIds = pendingOutfits.map((o) => o.id);
+      for (let start = 0; start < pendingIds.length; start += CONCURRENCY) {
+        const chunk = pendingIds.slice(start, start + CONCURRENCY);
+        const results = await Promise.allSettled(
+          chunk.map(async (id) => {
+            const outfit = batchOutfits.find((o) => o.id === id)!;
+            setBatchOutfits((prev) => prev.map((o) => (o.id === id ? { ...o, status: 'extracting' as const } : o)));
+            setBatchProgress({
+              currentOutfit: start + chunk.indexOf(id) + 1,
+              totalOutfits: pendingIds.length,
+              currentPose: 0,
+              totalPoses: 3,
+              label: `Analyzing outfit ${start + chunk.indexOf(id) + 1}/${pendingIds.length}…`,
+              phase: 'extracting',
+            });
+            const { base64, mimeType } = await readFileAsBase64(outfit.frontFile);
+            const spec = await extractGarmentSpec(base64, mimeType, apiKey);
+            return { id, spec, base64, mimeType };
+          })
+        );
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            specMap.set(r.value.id, r.value.spec);
+            // Cache spec onto the queue item for single-pose regen
+            const { id: rid, spec: rspec } = r.value;
+            setBatchOutfits((prev) => prev.map((o) => (o.id === rid ? { ...o, garmentSpec: rspec } : o)));
+          } else {
+            const failedId = chunk[results.indexOf(r)];
+            setBatchOutfits((prev) =>
+              prev.map((o) =>
+                o.id === failedId
+                  ? { ...o, status: 'error' as const, errorMessage: r.reason?.message || 'Spec extraction failed' }
+                  : o
+              )
+            );
+          }
+        }
+      }
+
+      // ── Phase 2: Chunk-parallel outfit generation ──
+      const outfitsToGenerate = pendingIds.filter((id) => specMap.has(id));
+      const uploadAvailable = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location?.hostname ?? '');
+
+      setBatchProgress({
+        currentOutfit: 0,
+        totalOutfits: outfitsToGenerate.length,
+        currentPose: 0,
+        totalPoses: 3,
+        label: `Generating ${outfitsToGenerate.length} outfit${outfitsToGenerate.length > 1 ? 's' : ''}…`,
+        phase: 'generating',
       });
 
-      const flatLayMime = flatLayFrontMime === 'image/jpeg' ? 'image/jpeg' : 'image/png';
-      const poses: Array<{ pose: 'front' | 'three-quarter' | 'back'; angleId: string }> = [
-        { pose: 'front', angleId: 'front' },
-        { pose: 'three-quarter', angleId: 'three-quarter' },
-        { pose: 'back', angleId: 'back' },
-      ];
+      for (let start = 0; start < outfitsToGenerate.length; start += GEN_CONCURRENCY) {
+        const chunk = outfitsToGenerate.slice(start, start + GEN_CONCURRENCY);
+        if (cancelBatchRef.current) break;
+        await Promise.allSettled(
+          chunk.map(async (outfitId) => {
+            const outfit = batchOutfits.find((o) => o.id === outfitId)!;
+            const spec = specMap.get(outfitId)!;
+            const outfitBatchId = Math.random().toString(36).substring(7);
+            const skuName = outfit.skuName.trim() || undefined;
+            // Per-outfit style: use outfit.styleId, fall back to global, fall back to first preset
+            const stylePreset = PDP_STYLE_PRESETS.find((p) => p.id === (outfit.styleId ?? selectedStyleIds[0])) ?? PDP_STYLE_PRESETS[0];
+            const styleSnippet = stylePreset.promptSnippet;
+            const outfitIndex = outfitsToGenerate.indexOf(outfitId) + 1;
 
-      function extractImageFromResponse(
-        response: { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ inlineData?: { data?: string }; text?: string }> } }> },
-        logPrefix: string
-      ): string {
-        for (const part of response.candidates?.[0]?.content?.parts ?? []) {
-          if (part.inlineData?.data) {
-            return `data:image/png;base64,${part.inlineData.data}`;
-          }
-        }
-        const c0 = response.candidates?.[0];
-        const finishReason = c0?.finishReason ?? null;
-        console.warn(`${logPrefix} No image in response:`, {
-          candidatesLength: response.candidates?.length ?? 0,
-          finishReason,
-          partsLength: c0?.content?.parts?.length ?? 0,
-          partTypes: (c0?.content?.parts ?? []).map((p) => ('inlineData' in p && p.inlineData ? 'inlineData' : 'text' in p ? 'text' : 'other')),
-        });
-        // Google's safety layer removed the generated image; no parts returned.
-        if (finishReason === 'IMAGE_SAFETY' || finishReason === 'SAFETY') {
-          const err = new Error('This image was filtered by safety filters. Try a different pose or reference.') as Error & { finishReason?: string };
-          err.finishReason = finishReason;
-          throw err;
-        }
-        throw new Error('No image data returned from model.');
-      }
+            setBatchOutfits((prev) =>
+              prev.map((o) => (o.id === outfitId ? { ...o, status: 'generating' as const, currentPose: 0 } : o))
+            );
 
-      const newImages: GeneratedImage[] = [];
+            try {
+              // Read front flat lay to base64
+              const { base64: flatLayFrontBase64, mimeType: flatLayFrontMime } = await readFileAsBase64(outfit.frontFile);
+              const flatLayMime = flatLayFrontMime === 'image/jpeg' ? 'image/jpeg' : 'image/png';
 
-      const uploadAvailable = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location?.hostname ?? '');
-      let frontResultBase64: string | null = null;
-      for (let i = 0; i < poses.length; i++) {
-        const { pose, angleId } = poses[i];
-        const isLongPose = i >= 1;
-        setGeneratingProgress({
-          current: i + 1,
-          total: 4,
-          label: isLongPose ? `Pose ${i + 1}/3 – may take 1–2 min` : undefined,
-        });
+              // Read back flat lay if present
+              let flatLayBackBase64: string | null = null;
+              let flatLayBackMime = 'image/png';
+              if (outfit.backFile) {
+                const backData = await readFileAsBase64(outfit.backFile);
+                flatLayBackBase64 = backData.base64;
+                flatLayBackMime = backData.mimeType;
+              }
 
-        const hasLengthAnchor = pose !== 'front' && !!frontResultBase64;
-        const promptText = buildPromptFromSpec(spec, pose, styleSnippet, !!flatLayBackBase64, hasLengthAnchor, attributes.height);
-        // Turn 1: front flat lay + model ref + text. Turns 2/3: flat lay + model ref + length anchor (front result) + text.
-        const anchorPart = hasLengthAnchor ? [{ inlineData: { data: frontResultBase64!, mimeType: 'image/png' as const } }] : [];
-        const message =
-          pose === 'front'
-            ? [
-                { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
-                { inlineData: { data: normalizedFrontRef, mimeType: 'image/png' } },
-                { text: promptText },
-              ]
-            : pose === 'three-quarter'
-              ? [
-                  { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
-                  { inlineData: { data: normalizedThreeQuarterRef, mimeType: 'image/png' } },
-                  ...anchorPart,
-                  { text: promptText },
-                ]
-              : [
-                  { inlineData: { data: flatLayBackBase64 ?? flatLayFrontBase64, mimeType: (flatLayBackBase64 ? (flatLayBackMime === 'image/jpeg' ? 'image/jpeg' : 'image/png') : flatLayMime) as 'image/png' | 'image/jpeg' } },
-                  { inlineData: { data: normalizedBackRef, mimeType: 'image/png' } },
-                  ...anchorPart,
-                  { text: promptText },
-                ];
+              const ai = new GoogleGenAI({ apiKey });
+              const genConfig = {
+                temperature: 0.2,
+                imageConfig: { aspectRatio: '2:3' as const, imageSize: '1K' as const },
+                thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+              };
+              const chat = ai.chats.create({
+                model: 'gemini-3.1-flash-image-preview',
+                config: genConfig,
+              });
 
-        const poseLabel = `${pose} (${i + 1}/3)`;
-        console.log(`[flat-lay ${runId}] Pose ${poseLabel}: request start`);
-        const tPose = performance.now();
-        const response = await chat.sendMessage({
-          message,
-          config: genConfig,
-        });
-        const poseMs = Math.round(performance.now() - tPose);
-        const usage = (response as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } }).usageMetadata;
-        if (usage) {
-          console.log(`[flat-lay ${runId}] Pose ${poseLabel}: done in ${poseMs}ms | tokens: prompt=${usage.promptTokenCount ?? '?'} candidates=${usage.candidatesTokenCount ?? '?'} total=${usage.totalTokenCount ?? '?'}`);
-        } else {
-          console.log(`[flat-lay ${runId}] Pose ${poseLabel}: done in ${poseMs}ms`);
-        }
+              const poses: Array<{ pose: 'front' | 'three-quarter' | 'back'; angleId: string }> = [
+                { pose: 'front', angleId: 'front' },
+                { pose: 'three-quarter', angleId: 'three-quarter' },
+                { pose: 'back', angleId: 'back' },
+              ];
+              const newImages: GeneratedImage[] = [];
+              let frontResultBase64: string | null = null;
 
-        let imageUrl = extractImageFromResponse(response, `[flat-lay ${runId}] Pose ${poseLabel}`);
-        // Capture front result base64 before crop — used as length anchor for turns 2/3
-        if (pose === 'front') {
-          frontResultBase64 = imageUrl.replace(/^data:[^;]+;base64,/, '');
-        }
-        const tCrop = performance.now();
-        try {
-          imageUrl = await cropToTargetAspectRatio(imageUrl, 2 / 3);
-        } catch (_) {
-          // keep uncropped if crop fails
-        }
-        console.log(`[flat-lay ${runId}] Pose ${poseLabel}: crop in ${Math.round(performance.now() - tCrop)}ms`);
+              for (let i = 0; i < poses.length; i++) {
+                const { pose, angleId } = poses[i];
+                setBatchOutfits((prev) =>
+                  prev.map((o) => (o.id === outfitId ? { ...o, currentPose: i + 1 } : o))
+                );
 
-        const newImage: GeneratedImage = {
-          id: Math.random().toString(36).substring(7),
-          url: imageUrl,
-          attributes: refImage.attributes,
-          timestamp: Date.now(),
-          prompt: promptText,
-          styleId: stylePreset.id,
-          angleId,
-          batchId,
-          sourceType: 'flat_lay',
-          skuName,
-        };
-        newImages.push(newImage);
-        if (uploadAvailable) {
-          const base64 = imageUrl.split(',')[1];
-          if (base64) {
-            fetch('/api/upload-image', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ image: base64 }),
-            })
-              .then((res) => (res.ok ? res.json() : null))
-              .then((data: { url?: string } | null) => {
-                if (data?.url) {
-                  setGeneratedImages((prev) =>
-                    prev.map((i) => (i.id === newImage.id ? { ...i, url: data.url! } : i))
-                  );
+                const hasLengthAnchor = pose !== 'front' && !!frontResultBase64;
+                const promptText = buildPromptFromSpec(spec, pose, styleSnippet, !!flatLayBackBase64, hasLengthAnchor, attributes.height);
+                const anchorPart = hasLengthAnchor ? [{ inlineData: { data: frontResultBase64!, mimeType: 'image/png' as const } }] : [];
+                const message =
+                  pose === 'front'
+                    ? [
+                        { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
+                        { inlineData: { data: normalizedFrontRef, mimeType: 'image/png' } },
+                        { text: promptText },
+                      ]
+                    : pose === 'three-quarter'
+                      ? [
+                          { inlineData: { data: flatLayFrontBase64, mimeType: flatLayMime } },
+                          { inlineData: { data: normalizedThreeQuarterRef, mimeType: 'image/png' } },
+                          ...anchorPart,
+                          { text: promptText },
+                        ]
+                      : [
+                          { inlineData: { data: flatLayBackBase64 ?? flatLayFrontBase64, mimeType: (flatLayBackBase64 ? (flatLayBackMime === 'image/jpeg' ? 'image/jpeg' : 'image/png') : flatLayMime) as 'image/png' | 'image/jpeg' } },
+                          { inlineData: { data: normalizedBackRef, mimeType: 'image/png' } },
+                          ...anchorPart,
+                          { text: promptText },
+                        ];
+
+                const poseLabel = `outfit ${outfitIndex}/${outfitsToGenerate.length} ${pose} (${i + 1}/3)`;
+                console.log(`[flat-lay ${runId}] ${poseLabel}: request start`);
+                const tPose = performance.now();
+                const response = await chat.sendMessage({ message, config: genConfig });
+                if (cancelBatchRef.current) throw new Error('cancelled');
+                const poseMs = Math.round(performance.now() - tPose);
+                const usage = (response as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } }).usageMetadata;
+                if (usage) {
+                  console.log(`[flat-lay ${runId}] ${poseLabel}: done in ${poseMs}ms | tokens: prompt=${usage.promptTokenCount ?? '?'} candidates=${usage.candidatesTokenCount ?? '?'} total=${usage.totalTokenCount ?? '?'}`);
+                } else {
+                  console.log(`[flat-lay ${runId}] ${poseLabel}: done in ${poseMs}ms`);
                 }
-              })
-              .catch((e) => console.warn(`[flat-lay ${runId}] Pose ${poseLabel}: upload failed`, e));
-          }
-        }
+
+                let imageUrl = extractImageFromResponse(response, `[flat-lay ${runId}] ${poseLabel}`);
+                if (pose === 'front') {
+                  frontResultBase64 = imageUrl.replace(/^data:[^;]+;base64,/, '');
+                }
+                try {
+                  imageUrl = await cropToTargetAspectRatio(imageUrl, 2 / 3);
+                } catch (_) {}
+
+                const newImage: GeneratedImage = {
+                  id: Math.random().toString(36).substring(7),
+                  url: imageUrl,
+                  attributes: refImage.attributes,
+                  timestamp: Date.now(),
+                  prompt: promptText,
+                  styleId: stylePreset.id,
+                  angleId,
+                  batchId: outfitBatchId,
+                  sourceType: 'flat_lay',
+                  skuName,
+                  outfitQueueId: outfitId,
+                };
+                newImages.push(newImage);
+                if (uploadAvailable) {
+                  const b64 = imageUrl.split(',')[1];
+                  if (b64) {
+                    fetch('/api/upload-image', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ image: b64 }),
+                    })
+                      .then((res) => (res.ok ? res.json() : null))
+                      .then((data: { url?: string } | null) => {
+                        if (data?.url) {
+                          setGeneratedImages((prev) =>
+                            prev.map((im) => (im.id === newImage.id ? { ...im, url: data.url! } : im))
+                          );
+                        }
+                      })
+                      .catch(() => {});
+                  }
+                }
+              }
+
+              // Success: add all 3 images to gallery (fires independently per outfit)
+              setGeneratedImages((prev) => [...newImages, ...prev]);
+              // Only set current image for single-outfit runs to avoid race conditions
+              if (outfitsToGenerate.length === 1 && newImages.length > 0) {
+                setCurrentImage(newImages[newImages.length - 1]);
+              }
+              setBatchOutfits((prev) =>
+                prev.map((o) => (o.id === outfitId ? { ...o, status: 'done' as const } : o))
+              );
+              console.log(`[flat-lay ${runId}] Outfit ${outfitIndex}/${outfitsToGenerate.length} done: ${newImages.length} images`);
+            } catch (err: any) {
+              if (err?.message === 'cancelled') {
+                setBatchOutfits((prev) =>
+                  prev.map((o) => (o.id === outfitId ? { ...o, status: 'pending' as const, currentPose: 0 } : o))
+                );
+                return;
+              }
+              console.error(`[flat-lay ${runId}] Outfit ${outfitIndex} error:`, err?.message ?? err);
+              setBatchOutfits((prev) =>
+                prev.map((o) =>
+                  o.id === outfitId
+                    ? { ...o, status: 'error' as const, errorMessage: err?.message || 'Generation failed' }
+                    : o
+                )
+              );
+            }
+          })
+        );
       }
 
-      setGeneratedImages(prev => [...newImages, ...prev]);
-      if (newImages.length > 0) setCurrentImage(newImages[newImages.length - 1]);
-      setViewMode('outfit-gallery');
-      console.log(`[flat-lay ${runId}] Finished: ${newImages.length} images`);
+      console.log(`[flat-lay ${runId}] Batch finished`);
     } catch (err: any) {
-      console.error(`[flat-lay ${runId}] Error:`, err?.message ?? err);
-      if (err?.response?.status) console.error(`[flat-lay ${runId}] Response status:`, err.response.status);
+      console.error(`[flat-lay ${runId}] Batch-level error:`, err?.message ?? err);
       setDressModelError(err?.message || 'Failed to generate. Try again.');
     } finally {
+      // Reset any outfits still in-flight back to pending so the user can retry
+      setBatchOutfits((prev) =>
+        prev.map((o) =>
+          o.status === 'extracting' || o.status === 'generating'
+            ? { ...o, status: 'pending' as const, currentPose: 0 }
+            : o
+        )
+      );
       setIsGeneratingOutfit(false);
-      setGeneratingProgress(null);
+      setBatchProgress(null);
+      cancelBatchRef.current = false;
     }
   };
 
@@ -1261,115 +1624,164 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
             </div>
           </div>
           ) : (
-          /* Dress model tab */
+          /* Dress model tab — batch queue */
           (() => {
-            const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
-            const byBatch = new Map<string, GeneratedImage[]>();
-            for (const img of modelOnly) {
+            const mdlOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
+            const byBatchMap = new Map<string, GeneratedImage[]>();
+            for (const img of mdlOnly) {
               const bid = img.batchId ?? img.id;
-              if (!byBatch.has(bid)) byBatch.set(bid, []);
-              byBatch.get(bid)!.push(img);
+              if (!byBatchMap.has(bid)) byBatchMap.set(bid, []);
+              byBatchMap.get(bid)!.push(img);
             }
-            const batches = Array.from(byBatch.entries()).map(([batchId, imgs]) => ({
+            const modelBatches = Array.from(byBatchMap.entries()).map(([batchId, imgs]) => ({
               batchId,
               images: imgs.sort((a, b) => a.timestamp - b.timestamp),
             }));
-            const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay' ? (currentImage.batchId ?? currentImage.id) : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
+            const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay' ? (currentImage.batchId ?? currentImage.id) : (mdlOnly[0] ? (mdlOnly[0].batchId ?? mdlOnly[0].id) : null);
             const effectiveDressBatchId = selectedDressBatchId ?? defaultBatchId;
-            const selectedBatch = batches.find(b => b.batchId === effectiveDressBatchId);
+            const selectedBatch = modelBatches.find(b => b.batchId === effectiveDressBatchId);
+            const pendingCount = batchOutfits.filter(o => o.status === 'pending' || o.status === 'error').length;
             return (
               <div className="flex-1 flex flex-col min-h-0">
                 <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                  <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Flat lay</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {/* Front flat lay (required) */}
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <label className="text-sm text-krea-muted">Front</label>
-                        <span className="text-[10px] text-red-400 font-bold uppercase tracking-widest">Required</span>
-                      </div>
-                      {flatLayFrontDataUrl ? (
-                        <div className="relative w-full aspect-square rounded-lg overflow-hidden border border-krea-border bg-krea-input-bg">
-                          <img src={flatLayFrontDataUrl} alt="Front flat lay" className="w-full h-full object-contain" />
-                          <button
-                            type="button"
-                            onClick={() => setFlatLayFrontDataUrl(null)}
-                            className="absolute top-1 right-1 p-1 rounded bg-black/60 hover:bg-black/80 text-white"
-                            title="Remove"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ) : (
-                        <label className="flex flex-col items-center justify-center w-full aspect-square rounded-lg border-2 border-dashed border-krea-border hover:border-krea-muted bg-krea-input-bg cursor-pointer transition-colors">
-                          <Plus className="w-5 h-5 text-krea-muted mb-1" />
-                          <span className="text-[10px] text-krea-muted">Upload</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                const reader = new FileReader();
-                                reader.onload = () => setFlatLayFrontDataUrl(reader.result as string);
-                                reader.readAsDataURL(file);
-                                setDressModelError(null);
-                              }
-                            }}
-                          />
-                        </label>
-                      )}
+                  {/* Upload zone */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Flat lays</label>
+                      <span className="text-[10px] text-krea-muted font-bold">{batchOutfits.length}/10</span>
                     </div>
-                    {/* Back flat lay (optional) */}
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <label className="text-sm text-krea-muted">Back</label>
-                        <span className="text-[10px] text-krea-muted font-bold uppercase tracking-widest">Optional</span>
-                      </div>
-                      {flatLayBackDataUrl ? (
-                        <div className="relative w-full aspect-square rounded-lg overflow-hidden border border-krea-border bg-krea-input-bg">
-                          <img src={flatLayBackDataUrl} alt="Back flat lay" className="w-full h-full object-contain" />
-                          <button
-                            type="button"
-                            onClick={() => setFlatLayBackDataUrl(null)}
-                            className="absolute top-1 right-1 p-1 rounded bg-black/60 hover:bg-black/80 text-white"
-                            title="Remove"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
+                    <label
+                      className={`flex flex-col items-center justify-center w-full py-6 rounded-lg border-2 border-dashed transition-colors cursor-pointer ${
+                        batchOutfits.length >= 10
+                          ? 'border-krea-border/40 bg-krea-input-bg/50 opacity-50 pointer-events-none'
+                          : 'border-krea-border hover:border-krea-muted bg-krea-input-bg'
+                      }`}
+                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (e.dataTransfer.files.length > 0) handleBatchFrontUpload(e.dataTransfer.files);
+                      }}
+                    >
+                      <Plus className="w-6 h-6 text-krea-muted mb-1" />
+                      <span className="text-xs text-krea-muted">Drop front flat lays or click to browse</span>
+                      <span className="text-[10px] text-krea-muted mt-1">Up to {10 - batchOutfits.length} more</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        disabled={batchOutfits.length >= 10 || isGeneratingOutfit}
+                        onChange={(e) => {
+                          if (e.target.files && e.target.files.length > 0) handleBatchFrontUpload(e.target.files);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  {/* Queue list */}
+                  {batchOutfits.length > 0 && (
+                    <div className="space-y-2" style={{ maxHeight: '360px', overflowY: 'auto' }}>
+                      {batchOutfits.map((outfit) => (
+                        <div key={outfit.id} className="flex items-center gap-2 p-2 rounded-lg border border-krea-border bg-krea-input-bg">
+                          {/* Thumbnail with status overlay */}
+                          <div className="relative w-12 h-12 rounded overflow-hidden bg-krea-bg flex-shrink-0">
+                            <img src={outfit.frontThumbUrl} alt={outfit.skuName} className="w-full h-full object-cover" />
+                            {outfit.status === 'extracting' || outfit.status === 'generating' ? (
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                                <Loader2 className="w-4 h-4 text-white animate-spin" />
+                              </div>
+                            ) : outfit.status === 'done' ? (
+                              <div className="absolute inset-0 bg-emerald-500/30 flex items-center justify-center">
+                                <Check className="w-4 h-4 text-emerald-300" />
+                              </div>
+                            ) : null}
+                          </div>
+                          {/* Name + style + status */}
+                          <div className="flex-1 min-w-0 space-y-0.5">
+                            <input
+                              type="text"
+                              value={outfit.skuName}
+                              onChange={(e) => handleUpdateSkuName(outfit.id, e.target.value)}
+                              disabled={isGeneratingOutfit}
+                              className="text-xs font-medium text-krea-text bg-transparent border-none outline-none w-full truncate p-0"
+                              placeholder="Outfit name"
+                            />
+                            {selectedStyleIds.length > 1 && (
+                              <select
+                                value={outfit.styleId ?? selectedStyleIds[0]}
+                                onChange={(e) => handleUpdateOutfitStyle(outfit.id, e.target.value)}
+                                disabled={isGeneratingOutfit}
+                                className="text-[10px] text-krea-muted bg-transparent border-none outline-none w-full truncate p-0 cursor-pointer disabled:cursor-not-allowed"
+                              >
+                                {PDP_STYLE_PRESETS.filter((p) => selectedStyleIds.includes(p.id)).map((p) => (
+                                  <option key={p.id} value={p.id}>{p.label}</option>
+                                ))}
+                              </select>
+                            )}
+                            {outfit.status === 'generating' && (
+                              <p className="text-[10px] text-krea-accent">Pose {outfit.currentPose}/3</p>
+                            )}
+                            {outfit.status === 'extracting' && (
+                              <p className="text-[10px] text-krea-muted">Analyzing…</p>
+                            )}
+                            {outfit.status === 'error' && (
+                              <p className="text-[10px] text-red-400 truncate" title={outfit.errorMessage ?? ''}>{outfit.errorMessage || 'Error'}</p>
+                            )}
+                            {outfit.status === 'done' && (
+                              <p className="text-[10px] text-emerald-400">Done</p>
+                            )}
+                          </div>
+                          {/* Back flat lay button / thumb */}
+                          <div className="flex-shrink-0">
+                            {outfit.backThumbUrl ? (
+                              <div className="relative w-8 h-8 rounded overflow-hidden border border-krea-border">
+                                <img src={outfit.backThumbUrl} alt="Back" className="w-full h-full object-cover" />
+                                {!isGeneratingOutfit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveBack(outfit.id)}
+                                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/70 flex items-center justify-center"
+                                    title="Remove back"
+                                  >
+                                    <X className="w-2.5 h-2.5 text-white" />
+                                  </button>
+                                )}
+                              </div>
+                            ) : (outfit.status === 'pending' || outfit.status === 'error') ? (
+                              <label className="text-[9px] text-krea-muted hover:text-krea-text cursor-pointer whitespace-nowrap border border-krea-border rounded px-1.5 py-0.5 transition-colors">
+                                + Back
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) handleBackUpload(outfit.id, file);
+                                    if (e.target) e.target.value = '';
+                                  }}
+                                />
+                              </label>
+                            ) : null}
+                          </div>
+                          {/* Remove */}
+                          {(outfit.status === 'pending' || outfit.status === 'error') && !isGeneratingOutfit && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveOutfit(outfit.id)}
+                              className="flex-shrink-0 p-1 text-krea-muted hover:text-red-400 transition-colors"
+                              title="Remove"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
-                      ) : (
-                        <label className="flex flex-col items-center justify-center w-full aspect-square rounded-lg border-2 border-dashed border-krea-border hover:border-krea-muted bg-krea-input-bg cursor-pointer transition-colors">
-                          <Plus className="w-5 h-5 text-krea-muted mb-1" />
-                          <span className="text-[10px] text-krea-muted">Upload</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                const reader = new FileReader();
-                                reader.onload = () => setFlatLayBackDataUrl(reader.result as string);
-                                reader.readAsDataURL(file);
-                              }
-                            }}
-                          />
-                        </label>
-                      )}
+                      ))}
                     </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm text-krea-muted">Outfit name (optional)</label>
-                    <input
-                      type="text"
-                      value={dressModelSkuName}
-                      onChange={(e) => setDressModelSkuName(e.target.value)}
-                      className="krea-input w-full"
-                      placeholder="e.g. Satin Slip Dress"
-                    />
-                  </div>
+                  )}
+
+                  {/* Model dropdown */}
                   <div className="space-y-1.5">
                     <label className="text-sm text-krea-muted">Select model</label>
                     <select
@@ -1377,10 +1789,10 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                       onChange={(e) => setSelectedDressBatchId(e.target.value || null)}
                       className="krea-input w-full appearance-none"
                     >
-                      {batches.length === 0 ? (
+                      {modelBatches.length === 0 ? (
                         <option value="">No models yet — generate one first</option>
                       ) : (
-                        batches.map(({ batchId, images }) => (
+                        modelBatches.map(({ batchId, images }) => (
                           <option key={batchId} value={batchId}>
                             {images[0]?.attributes?.name || 'Unnamed'} ({images.length} pose{images.length !== 1 ? 's' : ''})
                           </option>
@@ -1388,7 +1800,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                       )}
                     </select>
                     <p className="text-[10px] text-krea-muted">
-                      3 poses (front, 3/4, back)
+                      3 poses per outfit (front, 3/4, back)
                     </p>
                   </div>
                 </div>
@@ -1398,20 +1810,29 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                       <p className="text-red-400 text-xs font-medium">{dressModelError}</p>
                     </div>
                   )}
-                  <button
-                    onClick={() => handleDressFromFlatLay()}
-                    disabled={isGeneratingOutfit || !flatLayFrontDataUrl || !selectedBatch}
-                    className="krea-button w-full flex items-center justify-center gap-2 py-3"
-                  >
-                    {isGeneratingOutfit && generatingProgress ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        {generatingProgress.label ?? (generatingProgress.current === 0 ? 'Analyzing garment…' : generatingProgress.current === 1 ? 'Preparing…' : `Generating ${generatingProgress.current}/3…`)}
-                      </>
-                    ) : (
-                      'Dress model (3 images)'
-                    )}
-                  </button>
+                  {isGeneratingOutfit ? (
+                    <div className="flex items-center gap-2">
+                      <div className="krea-button flex-1 flex items-center justify-center gap-2 py-3 opacity-60 cursor-default pointer-events-none">
+                        <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                        <span className="truncate">{batchProgress?.label ?? 'Generating…'}</span>
+                      </div>
+                      <button
+                        onClick={cancelGeneration}
+                        title="Cancel generation"
+                        className="flex items-center justify-center w-11 h-11 rounded-xl border border-krea-border bg-krea-input-bg hover:bg-red-500/10 hover:border-red-500/40 text-krea-muted hover:text-red-400 transition-colors shrink-0"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => handleBatchDressFromFlatLay()}
+                      disabled={pendingCount === 0 || !selectedBatch}
+                      className="krea-button w-full flex items-center justify-center gap-2 py-3"
+                    >
+                      {`Generate all (${pendingCount} outfit${pendingCount !== 1 ? 's' : ''} × 3 poses)`}
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -1706,9 +2127,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                         <div className="col-span-full py-20 text-center space-y-4">
                           <Loader2 className="w-12 h-12 text-krea-text animate-spin mx-auto" />
                           <p className="text-krea-text font-medium">
-                            {generatingProgress
-                              ? generatingProgress.label ?? (generatingProgress.current === 0 ? 'Analyzing garment…' : generatingProgress.current === 1 ? 'Preparing…' : `Generating pose ${generatingProgress.current}/3…`)
-                              : 'Generating…'}
+                            {batchProgress ? batchProgress.label : 'Generating…'}
                           </p>
                           <p className="text-sm text-krea-muted">Your model-in-outfit shots will appear here when ready.</p>
                         </div>
@@ -1739,14 +2158,12 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                           Clear All
                         </button>
                       </div>
-                      {isGeneratingOutfit && (
+                      {isGeneratingOutfit && batches.length === 0 && (
                         <div className="space-y-2">
                           <div className="aspect-[2/3] bg-krea-input-bg rounded-xl overflow-hidden border border-krea-border border-dashed flex flex-col items-center justify-center gap-3 p-4">
                             <Loader2 className="w-10 h-10 text-krea-text animate-spin shrink-0" />
                             <p className="text-sm font-medium text-krea-text text-center">
-                              {generatingProgress
-                                ? generatingProgress.label ?? (generatingProgress.current === 0 ? 'Analyzing garment…' : generatingProgress.current === 1 ? 'Preparing…' : `Generating pose ${generatingProgress.current}/3…`)
-                                : 'Generating…'}
+                              {batchProgress ? batchProgress.label : 'Generating…'}
                             </p>
                             <p className="text-xs text-krea-muted text-center">New outfit will appear here</p>
                           </div>
@@ -1793,7 +2210,41 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                                   </button>
                                 </>
                               )}
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end items-end">
+                              {/* Pose-regen spinner overlay */}
+                              {(() => {
+                                const currentAngleId = currentImg?.angleId;
+                                const poseKey = `${batchId}__${currentAngleId}`;
+                                return regenPoses.has(poseKey) ? (
+                                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-20">
+                                    <Loader2 className="w-8 h-8 text-white animate-spin" />
+                                  </div>
+                                ) : null;
+                              })()}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end items-end gap-2">
+                                {(() => {
+                                  const currentAngleId = currentImg?.angleId;
+                                  const poseKey = `${batchId}__${currentAngleId}`;
+                                  const isPoseRegening = regenPoses.has(poseKey);
+                                  const outfitInQueue = generatedImages.some(
+                                    (img) => (img.batchId ?? img.id) === batchId && img.outfitQueueId &&
+                                    batchOutfits.some((o) => o.id === img.outfitQueueId)
+                                  );
+                                  return (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (currentAngleId && !isPoseRegening && !isGeneratingOutfit && outfitInQueue) {
+                                          handleRegeneratePose(batchId, currentAngleId);
+                                        }
+                                      }}
+                                      disabled={isPoseRegening || isGeneratingOutfit || !outfitInQueue}
+                                      className="p-2 bg-white/10 hover:bg-white/25 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                      title="Regenerate this pose"
+                                    >
+                                      <RotateCw className="w-3.5 h-3.5" />
+                                    </button>
+                                  );
+                                })()}
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -1811,9 +2262,11 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                               </div>
                             </motion.div>
                             <div className="text-center">
-                              <p className="text-[10px] font-bold uppercase tracking-widest text-krea-muted truncate mb-0.5">
-                                Flat lay{images[0]?.skuName ? ` · ${images[0].skuName}` : ''}
-                              </p>
+                              {images[0]?.skuName && (
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-krea-muted truncate mb-0.5">
+                                  {images[0].skuName}
+                                </p>
+                              )}
                               <p className="font-medium text-krea-text truncate">{currentImg.attributes?.name || 'Unnamed'}</p>
                             </div>
                           </div>
@@ -1937,9 +2390,9 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                             </div>
                             </motion.div>
                             <div className="text-center">
-                              {(currentImg.sourceType === 'flat_lay' || images.some(img => img.sourceType === 'flat_lay')) && (
+                              {images[0]?.skuName && (
                                 <p className="text-[10px] font-bold uppercase tracking-widest text-krea-muted truncate mb-0.5">
-                                  Flat lay{images[0]?.skuName ? ` · ${images[0].skuName}` : ''}
+                                  {images[0].skuName}
                                 </p>
                               )}
                               <p className="font-medium text-krea-text truncate">
