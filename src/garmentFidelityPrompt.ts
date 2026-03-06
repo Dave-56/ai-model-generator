@@ -1,6 +1,76 @@
 import type { PdpStylePreset, AnglePreset } from './types';
 import type { GarmentSpec } from './garmentSpec';
 
+// ── Styling Resolver ──────────────────────────────────────────────────────────
+
+interface StylingResolution {
+  baseLayer?: string;
+  accessories?: string;
+  footwear: string;
+}
+
+function resolveFootwear(spec: GarmentSpec): string {
+  const type = spec.garment_type.toLowerCase();
+  if (/evening dress|occasion dress|cocktail dress|gown/.test(type))
+    return 'strappy heeled sandals in a neutral or matching color';
+  if (/midi dress|maxi dress|slip dress/.test(type))
+    return 'minimal strappy heeled sandals or pointed-toe mules';
+  if (/casual dress|summer dress|mini dress/.test(type))
+    return 'minimal leather sandals or clean white trainers';
+  if (/dress/.test(type))
+    return 'minimal heeled sandals or pointed-toe pumps';
+  if (/blazer|suit|tailored trouser|trouser/.test(type))
+    return 'pointed-toe leather pumps or classic loafers';
+  if (/jacket|coat|bomber|outerwear/.test(type))
+    return 'heeled ankle boots or leather loafers';
+  if (/skirt/.test(type))
+    return 'minimal ankle-strap heels or pointed-toe mules';
+  if (/jeans|denim/.test(type))
+    return 'clean white trainers or ankle boots';
+  if (/activewear|leggings|sports/.test(type))
+    return 'clean white or black athletic trainers';
+  if (/top|blouse|shirt|tee|t-shirt/.test(type))
+    return 'clean white trainers or minimal leather sandals';
+  if (/knitwear|sweater|jumper|cardigan/.test(type))
+    return 'clean white trainers or ankle boots';
+  if (/shorts/.test(type))
+    return 'clean white trainers or minimal sandals';
+  return 'neutral leather loafers or minimal heeled sandals';
+}
+
+function resolveStyling(spec: GarmentSpec): StylingResolution {
+  const type = spec.garment_type.toLowerCase();
+  const footwear = resolveFootwear(spec);
+  if (/jacket|coat|bomber|outerwear|blazer/.test(type)) {
+    const baseColor = spec.primary_colors.some(c => /black/i.test(c)) ? 'white' : 'black';
+    return {
+      baseLayer: `a simple fitted ${baseColor} top underneath the ${spec.garment_type}`,
+      accessories: 'minimal delicate jewelry',
+      footwear,
+    };
+  }
+  if (/skirt/.test(type))
+    return { baseLayer: 'a fitted neutral top tucked into the skirt', footwear };
+  if (/dress/.test(type))
+    return { accessories: 'minimal delicate gold or silver jewelry', footwear };
+  if (/trouser|jeans|pants/.test(type))
+    return { baseLayer: 'a fitted top tucked in or slightly cropped to show the waistband', footwear };
+  return { footwear };
+}
+
+function buildStylingBlock(styling: StylingResolution): string {
+  const lines = [
+    'STYLING (fashion e-commerce standard):',
+    'This is a professional fashion ecommerce product photo matching the quality of premium retail brands such as Mango, Zara, and COS.',
+    'The hero garment is the sole focus. Complementary styling completes the look without distracting from it:',
+  ];
+  if (styling.baseLayer) lines.push(`- Base layer: ${styling.baseLayer}.`);
+  if (styling.accessories) lines.push(`- Accessories: ${styling.accessories}. Keep subtle.`);
+  lines.push(`- Footwear: The model is wearing ${styling.footwear}. Shoes must be fully visible and naturally styled with the outfit.`);
+  lines.push('- No bold colors or busy patterns in any complementary pieces. Everything supports the hero garment.');
+  return lines.join('\n');
+}
+
 /**
  * Garment-fidelity prompt for "flat lay → dressed model" flow.
  * Used with Nano Banana 2 (Gemini 3.1 Flash Image). The garment in the output
@@ -79,10 +149,8 @@ GARMENT FIDELITY (critical — do not alter the garment):
 - Preserve the garment's length and hem exactly as in the flat lay; do not shorten, crop, or lengthen the item. The garment must end at the same point on the body across all poses.
 - Fabric must look the same (e.g. denim, knit, satin) as in the flat lay.
 
-STYLING (standard quality — keep consistent, no random styles):
-- If the flat lay shows only ONE garment (e.g. a top only, or a bottom only): replace ONLY that garment from the flat lay. Keep all other clothing exactly as in the reference model image (e.g. keep the same shorts, same bottom, same top). Do not change, replace, or invent the model's shorts or other pieces that are not in the flat lay.
-- If the flat lay shows a full outfit (top and bottom), the model wears exactly those items; do not add or change other clothing.
-- Never invent patterns, logos, or text that are not in the flat lay. Non-garment clothing must match the reference image and must not distract from the product.
+{{STYLING_SNIPPET}}
+- Never invent patterns, logos, or text that are not in the flat lay. Complementary pieces must not distract from the hero garment.
 
 NATURAL WEAR (critical — must look actually worn, not pasted on):
 - The garment must drape and conform to the model's body: follow the curves of shoulders, chest, arms, waist, and hips. It must look worn, not digitally composited or floating.
@@ -97,9 +165,7 @@ POSE & FRAMING:
 - Match the reference model's pose and angle only; use consistent, centered framing with similar margins (do not copy tight or loose crop from the reference).
 {{STYLE_SNIPPET}}
 
-FOOTWEAR: Model is barefoot. No shoes.
-
-Output: One photorealistic image, high resolution, sharp details. The person must be unmistakably the same as in the reference — same face, same skin, same body. The only change is the clothing, which must match the flat lay garment exactly. The garment must look like real clothing actually worn in a studio shot — natural drape, realistic folds, consistent length across poses, no pasted-on or stiff appearance.`;
+Output: One photorealistic image in the style of professional fashion ecommerce photography from a premium retail brand. High resolution, sharp details. The person must be unmistakably the same as in the reference — same face, same skin, same body. The only change is the clothing, which must match the flat lay garment exactly. The garment must look like real clothing actually worn in a studio shot — natural drape, realistic folds, consistent length across poses, no pasted-on or stiff appearance.`;
 
 /**
  * Builds the full garment-fidelity prompt for one pose, with angle and PDP style
@@ -113,12 +179,17 @@ export function generateGarmentFidelityPrompt(
   stylePreset: PdpStylePreset,
   hasBackFlatLay = false,
   hasLengthAnchor = false,
+  spec?: GarmentSpec,
 ): string {
   const header = buildHeader(hasBackFlatLay, hasLengthAnchor);
   const anchor = hasLengthAnchor ? LENGTH_ANCHOR_SECTION : '';
+  const styling = spec
+    ? buildStylingBlock(resolveStyling(spec))
+    : 'STYLING (fashion e-commerce standard):\nThis is a professional fashion ecommerce product photo. Add appropriate footwear and style the model for a premium retail brand shoot.';
   return (header + GARMENT_FIDELITY_BODY + anchor)
     .replace('{{ANGLE_SNIPPET}}', anglePreset.promptSnippet)
-    .replace('{{STYLE_SNIPPET}}', stylePreset.promptSnippet);
+    .replace('{{STYLE_SNIPPET}}', stylePreset.promptSnippet)
+    .replace('{{STYLING_SNIPPET}}', styling);
 }
 
 /** Pose identifiers for the multi-turn chat flow (no anchor). */
@@ -143,6 +214,8 @@ function lengthAndLightingBlock(spec: GarmentSpec, hasBackFlatLay: boolean, pose
  * Build a short structured prompt from garment spec for one pose.
  * Used in multi-turn chat: turn 1 = front (with images), turn 2 = three-quarter, turn 3 = back.
  * @param hasBackFlatLay when true and pose is back, instructs to use back flat lay only for design, not length
+ * @param stylingDirection optional resolved styling direction — frontSnippet replaces the neutral pose line on
+ *   turn 1; energyCue is appended as a short cue on turns 2/3 (kept terse to preserve multi-turn chat context)
  */
 export function buildPromptFromSpec(
   spec: GarmentSpec,
@@ -151,6 +224,7 @@ export function buildPromptFromSpec(
   hasBackFlatLay = false,
   hasLengthAnchor = false,
   modelHeight?: string,
+  stylingDirection?: { frontSnippet: string; energyCue: string },
 ): string {
   const colors = spec.primary_colors.length ? spec.primary_colors.join(' ') : 'neutral';
   const heightNote = modelHeight ? ` The model is ${modelHeight} tall.` : '';
@@ -158,7 +232,9 @@ export function buildPromptFromSpec(
   const tail = lengthAndLightingBlock(spec, hasBackFlatLay, pose);
 
   if (pose === 'front') {
-    return `${base} Standing facing camera, neutral pose, arms relaxed at sides. Full body, ${styleSnippet}. ${FRAMING_BLOCK} ${tail}`;
+    const poseInstruction = stylingDirection?.frontSnippet ?? 'Standing facing camera, neutral pose, arms relaxed at sides.';
+    const styling = buildStylingBlock(resolveStyling(spec));
+    return `${base} ${poseInstruction} Full body, ${styleSnippet}. ${FRAMING_BLOCK} ${tail}\n\n${styling}`;
   }
 
   // For turns 2/3, prepend an image enumeration header when a length anchor is provided
@@ -175,8 +251,12 @@ export function buildPromptFromSpec(
       `3) A front-view result of this model already wearing this garment — use STRICTLY as a length and fit reference. The garment hem MUST end at the EXACT same point on the legs as shown in image 3. Match the garment's tightness/looseness of fit. Do NOT copy the pose or angle from image 3.\n\n`;
   }
 
+  // Short energy cue for turns 2/3 — kept terse so multi-turn chat context isn't confused by a full styling block
+  const energyCue = stylingDirection?.energyCue ? ` ${stylingDirection.energyCue}` : '';
+  const footwearCue = ` The model is wearing ${resolveFootwear(spec)}.`;
+
   if (pose === 'three-quarter') {
-    return `${anchorHeader}Same person, same garment. 30° right, face to camera. Same length and fit. ${FRAMING_BLOCK} ${tail}`;
+    return `${anchorHeader}Same person, same garment. 45° body turn, face to camera. Same length and fit.${energyCue}${footwearCue} ${FRAMING_BLOCK} ${tail}`;
   }
-  return `${anchorHeader}Same person, same garment. Back to camera. Head MUST be turned to one side looking over shoulder (angled, profile visible) — do NOT have head facing straight forward. Same length and fit. ${FRAMING_BLOCK} ${tail}`;
+  return `${anchorHeader}Same person, same garment. Back to camera. Head MUST be turned to one side looking over shoulder (angled, profile visible) — do NOT have head facing straight forward. Same length and fit.${energyCue}${footwearCue} ${FRAMING_BLOCK} ${tail}`;
 }

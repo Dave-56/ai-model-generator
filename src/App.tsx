@@ -22,8 +22,8 @@ import {
   X
 } from 'lucide-react';
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
-import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset, BatchOutfitItem, BatchProgress } from './types';
-import { PDP_STYLE_PRESETS, ANGLE_PRESETS } from './pdpPresets';
+import { ModelAttributes, GeneratedImage, ViewMode, PdpStylePreset, AnglePreset, BatchOutfitItem, BatchProgress, PresetModelEntry } from './types';
+import { PDP_STYLE_PRESETS, ANGLE_PRESETS, STYLING_DIRECTION_PRESETS } from './pdpPresets';
 import { buildPromptFromSpec } from './garmentFidelityPrompt';
 import { normalizeReferenceImage } from './normalizeReferenceImage';
 import { extractGarmentSpec } from './garmentSpec';
@@ -235,6 +235,7 @@ export default function App() {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   /** Per-batch index for gallery carousel (which pose is shown in each card). */
   const [galleryBatchIndex, setGalleryBatchIndex] = useState<Record<string, number>>({});
+  const [modelGalleryTab, setModelGalleryTab] = useState<'all' | 'library' | 'custom'>('all');
   /** Keys of individual poses currently being regenerated: "${galleryBatchId}__${angleId}" */
   const [regenPoses, setRegenPoses] = useState<Set<string>>(new Set());
 
@@ -245,9 +246,17 @@ export default function App() {
   const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
   const [selectedDressBatchId, setSelectedDressBatchId] = useState<string | null>(null);
   const [dressModelError, setDressModelError] = useState<string | null>(null);
+  const [presetModels, setPresetModels] = useState<PresetModelEntry[]>([]);
+  const [selectedPresetModelId, setSelectedPresetModelId] = useState<string | null>(() => {
+    try { return localStorage.getItem('nanobanana_selected_preset_id') ?? null; } catch (_) { return null; }
+  });
+  const [modelSource, setModelSource] = useState<'library' | 'saved'>(() => {
+    try { return (localStorage.getItem('nanobanana_model_source') as 'library' | 'saved') ?? 'library'; } catch (_) { return 'library'; }
+  });
   /** Pre-fetched model ref base64 for the selected dress batch; avoids delay when user clicks Generate. */
   const dressModelRefCache = useRef<{ batchId: string; base64: string | null }>({ batchId: '', base64: null });
   const cancelBatchRef = useRef(false);
+  const prevViewModeRef = useRef<ViewMode>('outfit-gallery');
   const [selectedStyleIds, setSelectedStyleIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('nanobanana_pdp_presets');
@@ -277,18 +286,49 @@ export default function App() {
     } catch (_) {}
     return ANGLE_PRESETS.map(p => p.id);
   });
+  // Styling direction — brand-level setting, defaults to clean/neutral (current behaviour).
+  const [stylingDirectionId, setStylingDirectionId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('nanobanana_pdp_presets');
+      if (saved) {
+        const parsed = JSON.parse(saved) as { stylingDirectionId?: string };
+        // 'clean' was the old default id — migrate to 'minimal'
+      const id = parsed.stylingDirectionId === 'clean' ? 'minimal' : parsed.stylingDirectionId;
+        if (id && STYLING_DIRECTION_PRESETS.some(p => p.id === id)) return id;
+      }
+    } catch (_) {}
+    return STYLING_DIRECTION_PRESETS[0].id;
+  });
+  const [stylingDirectionCustom, setStylingDirectionCustom] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('nanobanana_pdp_presets');
+      if (saved) {
+        const parsed = JSON.parse(saved) as { stylingDirectionCustom?: string };
+        return parsed.stylingDirectionCustom ?? '';
+      }
+    } catch (_) {}
+    return '';
+  });
 
   const [brandStyleSaveFeedback, setBrandStyleSaveFeedback] = useState(false);
 
   useEffect(() => {
     try {
-      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleIds: selectedStyleIds, angleIds: selectedAngleIds }));
+      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleIds: selectedStyleIds, angleIds: selectedAngleIds, stylingDirectionId, stylingDirectionCustom }));
     } catch (_) {}
-  }, [selectedStyleIds, selectedAngleIds]);
+  }, [selectedStyleIds, selectedAngleIds, stylingDirectionId, stylingDirectionCustom]);
+
+  useEffect(() => {
+    try { localStorage.setItem('nanobanana_model_source', modelSource); } catch (_) {}
+  }, [modelSource]);
+
+  useEffect(() => {
+    try { if (selectedPresetModelId) localStorage.setItem('nanobanana_selected_preset_id', selectedPresetModelId); } catch (_) {}
+  }, [selectedPresetModelId]);
 
   const handleSaveBrandStyle = () => {
     try {
-      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleIds: selectedStyleIds, angleIds: selectedAngleIds }));
+      localStorage.setItem('nanobanana_pdp_presets', JSON.stringify({ styleIds: selectedStyleIds, angleIds: selectedAngleIds, stylingDirectionId, stylingDirectionCustom }));
       setBrandStyleSaveFeedback(true);
       window.setTimeout(() => setBrandStyleSaveFeedback(false), 2000);
     } catch (_) {}
@@ -359,6 +399,39 @@ export default function App() {
   useEffect(() => {
     checkApiKey();
   }, []);
+
+  // Fetch pre-built model library on mount
+  useEffect(() => {
+    fetch('/preset-models.json')
+      .then(r => r.json())
+      .then((data: PresetModelEntry[]) => {
+        setPresetModels(data);
+        setSelectedPresetModelId(prev => prev ?? data[0]?.id ?? null);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Pre-fetch library model ref base64 when selected preset changes
+  useEffect(() => {
+    if (modelSource !== 'library' || !selectedPresetModelId) return;
+    const preset = presetModels.find(m => m.id === selectedPresetModelId);
+    if (!preset) return;
+    if (dressModelRefCache.current.batchId === selectedPresetModelId && dressModelRefCache.current.base64) return;
+    let cancelled = false;
+    fetch(preset.imageUrl)
+      .then(r => r.blob())
+      .then(blob => new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      }))
+      .then(base64 => {
+        if (!cancelled && base64) dressModelRefCache.current = { batchId: selectedPresetModelId!, base64 };
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [modelSource, selectedPresetModelId, presetModels]);
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -480,7 +553,7 @@ REQUIREMENTS:
 - Full body portrait from head to toe
 - IMPORTANT: Must not crop head or feet. The entire body from head to toes must be visible.
 - 2:3 portrait framing. Center the model with even margins on all sides.
-- OUTFIT (locked — use this exact description every time, no variation): Black short-sleeve fitted crop top ending at midriff. Black high-waist short shorts (hotpants length, upper thigh only). Same garment style for all models.
+- OUTFIT (locked — use this exact description every time, no variation): ${attrs.gender === 'Male' ? 'Fitted black crew-neck t-shirt, full length with hem sitting at the waist. Black slim-fit shorts, mid-thigh length.' : 'Black short-sleeve fitted crop top ending at midriff. Black high-waist short shorts (hotpants length, upper thigh only).'} Same garment style for all models.
 - Footwear: Model must be BAREFOOT. No shoes, no heels, no sandals, no footwear of any kind.
 - High resolution, sharp details
 - The model should look like a real person, not AI-generated`;
@@ -566,7 +639,7 @@ WHAT TO KEEP FROM THE REFERENCE IMAGE:
 - Face, facial expression, skin tone, skin texture
 - Body proportions, body physique, height
 - Hair length, hair style, hair color
-- Exact outfit: black short-sleeve fitted crop top ending at midriff, black high-waist short shorts (hotpants length). Do not change, add, or remove any clothing.
+- Exact outfit: ${attributes.gender === 'Male' ? 'fitted black crew-neck t-shirt with hem at the waist, black slim-fit shorts mid-thigh length' : 'black short-sleeve fitted crop top ending at midriff, black high-waist short shorts (hotpants length)'}. Do not change, add, or remove any clothing.
 - Barefoot. No shoes.
 
 WHAT TO CHANGE:
@@ -840,40 +913,69 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
     setRegenPoses((prev) => { const next = new Set(prev); next.add(key); return next; });
 
     try {
-      // Resolve model ref images (same logic as handleBatchDressFromFlatLay)
-      const byBatch = new Map<string, GeneratedImage[]>();
-      for (const img of generatedImages) {
-        const bid = img.batchId ?? img.id;
-        if (!byBatch.has(bid)) byBatch.set(bid, []);
-        byBatch.get(bid)!.push(img);
+      // ── Resolve model ref (library or saved) ─────────────────────────
+      let normalizedFrontRef: string;
+      let normalizedThreeQuarterRef: string;
+      let normalizedBackRef: string;
+      let activeHeight: string | undefined;
+
+      if (modelSource === 'library') {
+        const preset = presetModels.find(m => m.id === selectedPresetModelId);
+        if (!preset) return;
+        let base64 = dressModelRefCache.current.batchId === selectedPresetModelId && dressModelRefCache.current.base64
+          ? dressModelRefCache.current.base64
+          : null;
+        if (!base64) {
+          try {
+            const resp = await fetch(preset.imageUrl);
+            const blob = await resp.blob();
+            base64 = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve((reader.result as string).split(',')[1]);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+          } catch { return; }
+        }
+        const normalized = await normalizeReferenceImage(base64, 'image/png').catch(() => base64!);
+        normalizedFrontRef = normalized;
+        normalizedThreeQuarterRef = normalized;
+        normalizedBackRef = normalized;
+        activeHeight = preset.height;
+      } else {
+        const byBatch = new Map<string, GeneratedImage[]>();
+        for (const img of generatedImages) {
+          const bid = img.batchId ?? img.id;
+          if (!byBatch.has(bid)) byBatch.set(bid, []);
+          byBatch.get(bid)!.push(img);
+        }
+        const modelOnly = generatedImages.filter((img) => img.sourceType !== 'flat_lay');
+        const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay'
+          ? (currentImage.batchId ?? currentImage.id)
+          : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
+        const effectiveBatchId = selectedDressBatchId ?? defaultBatchId;
+        const batchImages: GeneratedImage[] = effectiveBatchId
+          ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp)
+          : [];
+        if (batchImages.length === 0) return;
+        const refFrontImg = batchImages.find((img) => img.angleId === 'front') ?? batchImages[0];
+        const refThreeQuarterImg = batchImages.find((img) => img.angleId === 'three-quarter') ?? refFrontImg;
+        const refBackImg = batchImages.find((img) => img.angleId === 'back') ?? refFrontImg;
+        const [frontB64, threeQuarterB64, backB64] = await Promise.all([
+          dressModelRefCache.current.batchId === effectiveBatchId && dressModelRefCache.current.base64
+            ? Promise.resolve(dressModelRefCache.current.base64)
+            : extractBase64FromImage(refFrontImg),
+          extractBase64FromImage(refThreeQuarterImg),
+          extractBase64FromImage(refBackImg),
+        ]);
+        if (!frontB64) return;
+        [normalizedFrontRef, normalizedThreeQuarterRef, normalizedBackRef] = await Promise.all([
+          normalizeReferenceImage(frontB64, 'image/png').catch(() => frontB64),
+          normalizeReferenceImage(threeQuarterB64 ?? frontB64, 'image/png').catch(() => threeQuarterB64 ?? frontB64),
+          normalizeReferenceImage(backB64 ?? frontB64, 'image/png').catch(() => backB64 ?? frontB64),
+        ]);
+        activeHeight = batchImages[0]?.attributes?.height;
       }
-      const modelOnly = generatedImages.filter((img) => img.sourceType !== 'flat_lay');
-      const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay'
-        ? (currentImage.batchId ?? currentImage.id)
-        : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
-      const effectiveBatchId = selectedDressBatchId ?? defaultBatchId;
-      const batchImages: GeneratedImage[] = effectiveBatchId
-        ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp)
-        : [];
-      if (batchImages.length === 0) return;
-
-      const refFrontImg = batchImages.find((img) => img.angleId === 'front') ?? batchImages[0];
-      const refThreeQuarterImg = batchImages.find((img) => img.angleId === 'three-quarter') ?? refFrontImg;
-      const refBackImg = batchImages.find((img) => img.angleId === 'back') ?? refFrontImg;
-
-      const [frontB64, threeQuarterB64, backB64] = await Promise.all([
-        dressModelRefCache.current.batchId === effectiveBatchId && dressModelRefCache.current.base64
-          ? Promise.resolve(dressModelRefCache.current.base64)
-          : extractBase64FromImage(refFrontImg),
-        extractBase64FromImage(refThreeQuarterImg),
-        extractBase64FromImage(refBackImg),
-      ]);
-      if (!frontB64) return;
-      const [normalizedFrontRef, normalizedThreeQuarterRef, normalizedBackRef] = await Promise.all([
-        normalizeReferenceImage(frontB64, 'image/png').catch(() => frontB64),
-        normalizeReferenceImage(threeQuarterB64 ?? frontB64, 'image/png').catch(() => threeQuarterB64 ?? frontB64),
-        normalizeReferenceImage(backB64 ?? frontB64, 'image/png').catch(() => backB64 ?? frontB64),
-      ]);
 
       // Resolve garment spec — use cached or re-extract
       const apiKey = process.env.GEMINI_API_KEY ?? '';
@@ -908,7 +1010,10 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
       const anchorPart = hasLengthAnchor ? [{ inlineData: { data: frontResultBase64!, mimeType: 'image/png' as const } }] : [];
 
       const pose = angleId as 'front' | 'three-quarter' | 'back';
-      const promptText = buildPromptFromSpec(spec, pose, styleSnippet, !!flatLayBackBase64, hasLengthAnchor, batchImages[0]?.attributes?.height);
+      const resolvedStylingDir = stylingDirectionCustom.trim()
+        ? { frontSnippet: stylingDirectionCustom.trim(), energyCue: 'Same energy and posture.' }
+        : (STYLING_DIRECTION_PRESETS.find(p => p.id === stylingDirectionId) ?? STYLING_DIRECTION_PRESETS[0]);
+      const promptText = buildPromptFromSpec(spec, pose, styleSnippet, !!flatLayBackBase64, hasLengthAnchor, activeHeight, resolvedStylingDir);
 
       const message =
         pose === 'front'
@@ -980,29 +1085,42 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
       setDressModelError('Upload at least one front flat lay image.');
       return;
     }
-    // Resolve model batch
-    const byBatch = new Map<string, GeneratedImage[]>();
-    for (const img of generatedImages) {
-      const bid = img.batchId ?? img.id;
-      if (!byBatch.has(bid)) byBatch.set(bid, []);
-      byBatch.get(bid)!.push(img);
-    }
-    const modelOnly = generatedImages.filter((img) => img.sourceType !== 'flat_lay');
-    const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay'
-      ? (currentImage.batchId ?? currentImage.id)
-      : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
-    const effectiveBatchId = selectedDressBatchId ?? defaultBatchId;
-    const batchImages: GeneratedImage[] = effectiveBatchId
-      ? (byBatch.get(effectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp)
-      : [];
-    if (batchImages.length === 0) {
-      setDressModelError('Select a model first. Generate a model in the Model tab.');
-      return;
-    }
+    // ── Resolve active model (library or saved) ──────────────────────────
+    let activeAttributes: ModelAttributes;
+    let activeHeight: string | undefined;
+    let savedBatchImages: GeneratedImage[] = [];
+    let savedEffectiveBatchId: string | null = null;
 
-    const refFrontImg = batchImages.find((img) => img.angleId === 'front') ?? batchImages[0];
-    const refThreeQuarterImg = batchImages.find((img) => img.angleId === 'three-quarter') ?? refFrontImg;
-    const refBackImg = batchImages.find((img) => img.angleId === 'back') ?? refFrontImg;
+    if (modelSource === 'library') {
+      const preset = presetModels.find(m => m.id === selectedPresetModelId);
+      if (!preset) {
+        setDressModelError('Select a model from the library first.');
+        return;
+      }
+      activeAttributes = { name: preset.name, gender: preset.gender, ethnicity: preset.ethnicity, skinTone: preset.skinTone, bodyBuild: preset.bodyBuild, height: preset.height, hairStyle: preset.hairStyle, hairColor: preset.hairColor, ageRange: preset.ageRange };
+      activeHeight = preset.height;
+    } else {
+      const byBatch = new Map<string, GeneratedImage[]>();
+      for (const img of generatedImages) {
+        const bid = img.batchId ?? img.id;
+        if (!byBatch.has(bid)) byBatch.set(bid, []);
+        byBatch.get(bid)!.push(img);
+      }
+      const modelOnly = generatedImages.filter((img) => img.sourceType !== 'flat_lay');
+      const defaultBatchId = currentImage && currentImage.sourceType !== 'flat_lay'
+        ? (currentImage.batchId ?? currentImage.id)
+        : (modelOnly[0] ? (modelOnly[0].batchId ?? modelOnly[0].id) : null);
+      savedEffectiveBatchId = selectedDressBatchId ?? defaultBatchId;
+      savedBatchImages = savedEffectiveBatchId
+        ? (byBatch.get(savedEffectiveBatchId) ?? []).slice().sort((a, b) => a.timestamp - b.timestamp)
+        : [];
+      if (savedBatchImages.length === 0) {
+        setDressModelError('Select a model first. Generate a model in the Model tab.');
+        return;
+      }
+      activeAttributes = savedBatchImages[0].attributes;
+      activeHeight = savedBatchImages[0].attributes?.height;
+    }
 
     setDressModelError(null);
     setIsGeneratingOutfit(true);
@@ -1010,30 +1128,58 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
     setViewMode('outfit-gallery');
 
     const apiKey = process.env.GEMINI_API_KEY ?? '';
-    const refImage = batchImages[0];
     const runId = Date.now().toString(36).slice(-6);
 
     try {
       // ── Resolve model refs once (shared across all outfits) ──
-      const [frontB64, threeQuarterB64, backB64] = await Promise.all([
-        dressModelRefCache.current.batchId === effectiveBatchId && dressModelRefCache.current.base64
-          ? Promise.resolve(dressModelRefCache.current.base64)
-          : extractBase64FromImage(refFrontImg),
-        extractBase64FromImage(refThreeQuarterImg),
-        extractBase64FromImage(refBackImg),
-      ]);
-      if (!frontB64) {
-        setDressModelError('Selected model image must be available (try re-generating the model).');
-        setIsGeneratingOutfit(false);
-        return;
-      }
-      const [normalizedFrontRef, normalizedThreeQuarterRef, normalizedBackRef] = await Promise.all([
-        normalizeReferenceImage(frontB64, 'image/png').catch(() => frontB64),
-        normalizeReferenceImage(threeQuarterB64 ?? frontB64, 'image/png').catch(() => threeQuarterB64 ?? frontB64),
-        normalizeReferenceImage(backB64 ?? frontB64, 'image/png').catch(() => backB64 ?? frontB64),
-      ]);
-      if (dressModelRefCache.current.batchId === effectiveBatchId) {
-        dressModelRefCache.current = { batchId: effectiveBatchId!, base64: frontB64 };
+      let normalizedFrontRef: string;
+      let normalizedThreeQuarterRef: string;
+      let normalizedBackRef: string;
+
+      if (modelSource === 'library') {
+        const preset = presetModels.find(m => m.id === selectedPresetModelId)!;
+        let base64 = dressModelRefCache.current.batchId === selectedPresetModelId && dressModelRefCache.current.base64
+          ? dressModelRefCache.current.base64
+          : null;
+        if (!base64) {
+          const resp = await fetch(preset.imageUrl);
+          const blob = await resp.blob();
+          base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve((reader.result as string).split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          dressModelRefCache.current = { batchId: selectedPresetModelId!, base64 };
+        }
+        const normalized = await normalizeReferenceImage(base64, 'image/png').catch(() => base64!);
+        normalizedFrontRef = normalized;
+        normalizedThreeQuarterRef = normalized;
+        normalizedBackRef = normalized;
+      } else {
+        const refFrontImg = savedBatchImages.find((img) => img.angleId === 'front') ?? savedBatchImages[0];
+        const refThreeQuarterImg = savedBatchImages.find((img) => img.angleId === 'three-quarter') ?? refFrontImg;
+        const refBackImg = savedBatchImages.find((img) => img.angleId === 'back') ?? refFrontImg;
+        const [frontB64, threeQuarterB64, backB64] = await Promise.all([
+          dressModelRefCache.current.batchId === savedEffectiveBatchId && dressModelRefCache.current.base64
+            ? Promise.resolve(dressModelRefCache.current.base64)
+            : extractBase64FromImage(refFrontImg),
+          extractBase64FromImage(refThreeQuarterImg),
+          extractBase64FromImage(refBackImg),
+        ]);
+        if (!frontB64) {
+          setDressModelError('Selected model image must be available (try re-generating the model).');
+          setIsGeneratingOutfit(false);
+          return;
+        }
+        [normalizedFrontRef, normalizedThreeQuarterRef, normalizedBackRef] = await Promise.all([
+          normalizeReferenceImage(frontB64, 'image/png').catch(() => frontB64),
+          normalizeReferenceImage(threeQuarterB64 ?? frontB64, 'image/png').catch(() => threeQuarterB64 ?? frontB64),
+          normalizeReferenceImage(backB64 ?? frontB64, 'image/png').catch(() => backB64 ?? frontB64),
+        ]);
+        if (dressModelRefCache.current.batchId === savedEffectiveBatchId) {
+          dressModelRefCache.current = { batchId: savedEffectiveBatchId!, base64: frontB64 };
+        }
       }
 
       // ── Phase 1: Concurrency-capped spec extraction (3 at a time) ──
@@ -1150,7 +1296,10 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                 );
 
                 const hasLengthAnchor = pose !== 'front' && !!frontResultBase64;
-                const promptText = buildPromptFromSpec(spec, pose, styleSnippet, !!flatLayBackBase64, hasLengthAnchor, attributes.height);
+                const resolvedStylingDir = stylingDirectionCustom.trim()
+                  ? { frontSnippet: stylingDirectionCustom.trim(), energyCue: 'Same energy and posture.' }
+                  : (STYLING_DIRECTION_PRESETS.find(p => p.id === stylingDirectionId) ?? STYLING_DIRECTION_PRESETS[0]);
+                const promptText = buildPromptFromSpec(spec, pose, styleSnippet, !!flatLayBackBase64, hasLengthAnchor, activeHeight, resolvedStylingDir);
                 const anchorPart = hasLengthAnchor ? [{ inlineData: { data: frontResultBase64!, mimeType: 'image/png' as const } }] : [];
                 const message =
                   pose === 'front'
@@ -1197,7 +1346,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                 const newImage: GeneratedImage = {
                   id: Math.random().toString(36).substring(7),
                   url: imageUrl,
-                  attributes: refImage.attributes,
+                  attributes: activeAttributes,
                   timestamp: Date.now(),
                   prompt: promptText,
                   styleId: stylePreset.id,
@@ -1560,52 +1709,99 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
           </>
           ) : activeTab === 'brand-style' ? (
           <div className="flex-1 flex flex-col min-h-0">
-            <div className="flex-1 overflow-y-auto p-6 space-y-8">
-              <div className="space-y-4">
-                <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Brand PDP Style</label>
-                <p className="text-xs text-krea-muted">Choose one or more looks for your fashion PDP photoshoots (model wearing clothes). Saved to your workspace.</p>
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-sm text-krea-muted">Styles</label>
-                    <p className="text-[10px] text-krea-muted">Select the styles your brand uses. We’ll use these when generating PDP images.</p>
-                    <div className="space-y-3">
-                      {PDP_STYLE_PRESETS.map((p) => (
-                        <label key={p.id} className="flex gap-3 cursor-pointer group">
-                          <input
-                            type="checkbox"
-                            checked={selectedStyleIds.includes(p.id)}
-                            onChange={() => toggleStyleId(p.id)}
-                            className="mt-1 rounded border-krea-border bg-krea-input-bg text-krea-accent focus:ring-krea-accent flex-shrink-0"
-                          />
-                          <div className="min-w-0">
-                            <span className="text-sm font-medium text-krea-text block">{p.label}</span>
-                            {p.description && (
-                              <p className="text-[10px] text-krea-muted mt-0.5">{p.description}</p>
-                            )}
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                <div className="space-y-2">
-                  <label className="text-sm text-krea-muted">Angles (for each PDP)</label>
-                  <p className="text-[10px] text-krea-muted">Same model in these poses per outfit — e.g. front, 3/4, back.</p>
-                  <div className="space-y-2">
-                    {ANGLE_PRESETS.map((p) => (
-                      <label key={p.id} className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={selectedAngleIds.includes(p.id)}
-                          onChange={() => toggleAngleId(p.id)}
-                          className="rounded border-krea-border bg-krea-input-bg text-krea-accent focus:ring-krea-accent"
-                        />
-                        <span className="text-sm text-krea-text">{p.label}</span>
-                      </label>
-                    ))}
-                  </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+
+              {/* Background */}
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Background</label>
+                <div className="flex gap-2">
+                  {PDP_STYLE_PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => toggleStyleId(p.id)}
+                      className={`flex-1 py-2 px-3 rounded-lg border text-xs font-medium transition-colors ${
+                        selectedStyleIds.includes(p.id)
+                          ? 'border-krea-accent bg-krea-accent/10 text-krea-text'
+                          : 'border-krea-border text-krea-muted hover:border-krea-muted hover:text-krea-text'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
                 </div>
+                {PDP_STYLE_PRESETS.filter((p) => selectedStyleIds.includes(p.id)).map((p) => (
+                  p.description ? <p key={p.id} className="text-[10px] text-krea-muted">{p.description}</p> : null
+                ))}
+              </div>
+
+              {/* Angles */}
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Angles</label>
+                <p className="text-[10px] text-krea-muted">Views generated per outfit.</p>
+                <div className="flex gap-2">
+                  {ANGLE_PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => toggleAngleId(p.id)}
+                      className={`flex-1 py-2 px-3 rounded-lg border text-xs font-medium transition-colors ${
+                        selectedAngleIds.includes(p.id)
+                          ? 'border-krea-accent bg-krea-accent/10 text-krea-text'
+                          : 'border-krea-border text-krea-muted hover:border-krea-muted hover:text-krea-text'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
                 </div>
               </div>
+
+              {/* Styling Direction */}
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Styling Direction</label>
+                <p className="text-[10px] text-krea-muted">The energy your model projects. Set once for your brand.</p>
+                <select
+                  value={stylingDirectionCustom.trim() ? '__custom__' : stylingDirectionId}
+                  onChange={(e) => {
+                    if (e.target.value !== '__custom__') {
+                      setStylingDirectionId(e.target.value);
+                      setStylingDirectionCustom('');
+                    }
+                  }}
+                  className="krea-input w-full appearance-none"
+                >
+                  {STYLING_DIRECTION_PRESETS.map((p) => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                  {stylingDirectionCustom.trim() && (
+                    <option value="__custom__">Custom</option>
+                  )}
+                </select>
+                {!stylingDirectionCustom.trim() && (() => {
+                  const selected = STYLING_DIRECTION_PRESETS.find((p) => p.id === stylingDirectionId);
+                  return selected?.description
+                    ? <p className="text-[10px] text-krea-muted">{selected.description}</p>
+                    : null;
+                })()}
+                <textarea
+                  value={stylingDirectionCustom}
+                  onChange={(e) => setStylingDirectionCustom(e.target.value)}
+                  placeholder='Custom override: e.g. "One hand on hip, weight shifted, relaxed but polished."'
+                  rows={2}
+                  className="krea-input w-full text-xs resize-none"
+                />
+                {stylingDirectionCustom.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setStylingDirectionCustom('')}
+                    className="text-[10px] text-krea-muted hover:text-krea-text transition-colors"
+                  >
+                    Clear — use preset
+                  </button>
+                )}
+              </div>
+
             </div>
             <div className="p-6 border-t border-krea-border">
               <button
@@ -1781,27 +1977,71 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                     </div>
                   )}
 
-                  {/* Model dropdown */}
-                  <div className="space-y-1.5">
-                    <label className="text-sm text-krea-muted">Select model</label>
-                    <select
-                      value={effectiveDressBatchId ?? ''}
-                      onChange={(e) => setSelectedDressBatchId(e.target.value || null)}
-                      className="krea-input w-full appearance-none"
+                  {/* Styling direction hint */}
+                  <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-krea-input-bg border border-krea-border">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Sparkles className="w-3.5 h-3.5 text-krea-muted flex-shrink-0" />
+                      <span className="text-[10px] text-krea-muted truncate">
+                        Style: <span className="text-krea-text font-medium">{stylingDirectionCustom.trim() ? 'Custom' : (STYLING_DIRECTION_PRESETS.find(p => p.id === stylingDirectionId)?.label ?? 'Clean / Neutral')}</span>
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('brand-style')}
+                      className="text-[10px] text-krea-muted hover:text-krea-text transition-colors flex-shrink-0 ml-2"
                     >
-                      {modelBatches.length === 0 ? (
-                        <option value="">No models yet — generate one first</option>
-                      ) : (
-                        modelBatches.map(({ batchId, images }) => (
-                          <option key={batchId} value={batchId}>
-                            {images[0]?.attributes?.name || 'Unnamed'} ({images.length} pose{images.length !== 1 ? 's' : ''})
-                          </option>
-                        ))
-                      )}
-                    </select>
-                    <p className="text-[10px] text-krea-muted">
-                      3 poses per outfit (front, 3/4, back)
-                    </p>
+                      Edit
+                    </button>
+                  </div>
+
+                  {/* Compact model selector */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold uppercase tracking-widest text-krea-muted">Model</label>
+                    {(() => {
+                      const openPicker = () => { prevViewModeRef.current = viewMode; setViewMode('model-picker'); };
+                      if (modelSource === 'library') {
+                        const preset = presetModels.find(m => m.id === selectedPresetModelId);
+                        return (
+                          <div className="flex items-center gap-2 p-2 rounded-lg border border-krea-border bg-krea-input-bg">
+                            {preset ? (
+                              <>
+                                <img src={preset.imageUrl} alt={preset.name} className="w-8 rounded object-cover flex-shrink-0" style={{ height: '42px' }} />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-krea-text truncate">{preset.name}</p>
+                                  <p className="text-[10px] text-krea-muted truncate">{preset.gender[0]} · {preset.ethnicity.split(' /')[0]}</p>
+                                </div>
+                              </>
+                            ) : (
+                              <p className="text-xs text-krea-muted flex-1">No model selected</p>
+                            )}
+                            <button type="button" onClick={openPicker} className="text-[10px] text-krea-muted hover:text-krea-text transition-colors flex-shrink-0 font-medium">
+                              Change
+                            </button>
+                          </div>
+                        );
+                      } else {
+                        const batch = modelBatches.find(b => b.batchId === effectiveDressBatchId);
+                        const frontImg = batch?.images.find(img => img.angleId === 'front') ?? batch?.images[0];
+                        return (
+                          <div className="flex items-center gap-2 p-2 rounded-lg border border-krea-border bg-krea-input-bg">
+                            {frontImg ? (
+                              <>
+                                <img src={frontImg.url} alt={frontImg.attributes?.name ?? 'Model'} className="w-8 rounded object-cover flex-shrink-0" style={{ height: '42px' }} />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-krea-text truncate">{frontImg.attributes?.name ?? 'Unnamed'}</p>
+                                  <p className="text-[10px] text-krea-muted truncate">{batch!.images.length} pose{batch!.images.length !== 1 ? 's' : ''}</p>
+                                </div>
+                              </>
+                            ) : (
+                              <p className="text-xs text-krea-muted flex-1">{modelBatches.length === 0 ? 'No models yet' : 'None selected'}</p>
+                            )}
+                            <button type="button" onClick={openPicker} className="text-[10px] text-krea-muted hover:text-krea-text transition-colors flex-shrink-0 font-medium">
+                              Change
+                            </button>
+                          </div>
+                        );
+                      }
+                    })()}
                   </div>
                 </div>
                 <div className="p-6 border-t border-krea-border space-y-3">
@@ -1827,7 +2067,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                   ) : (
                     <button
                       onClick={() => handleBatchDressFromFlatLay()}
-                      disabled={pendingCount === 0 || !selectedBatch}
+                      disabled={pendingCount === 0 || (modelSource === 'saved' ? !selectedBatch : !selectedPresetModelId)}
                       className="krea-button w-full flex items-center justify-center gap-2 py-3"
                     >
                       {`Generate all (${pendingCount} outfit${pendingCount !== 1 ? 's' : ''} × 3 poses)`}
@@ -1851,7 +2091,7 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
             >
               Models ({(() => {
                 const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
-                return new Set(modelOnly.map(img => img.batchId ?? img.id)).size;
+                return presetModels.length + new Set(modelOnly.map(img => img.batchId ?? img.id)).size;
               })()})
             </button>
             <button 
@@ -1922,7 +2162,96 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto p-8">
           <AnimatePresence mode="wait">
-            {viewMode === 'builder' ? (
+            {viewMode === 'model-picker' ? (
+              <motion.div
+                key="model-picker"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 8 }}
+                transition={{ duration: 0.15 }}
+                className="max-w-5xl mx-auto"
+              >
+                {/* Header */}
+                <div className="flex items-center gap-4 mb-6">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode(prevViewModeRef.current)}
+                    className="flex items-center gap-1.5 text-sm text-krea-muted hover:text-krea-text transition-colors"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="flex-shrink-0"><path d="M10 3L5 8L10 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Back
+                  </button>
+                  <h2 className="text-xl font-semibold text-krea-text">Choose a model</h2>
+                </div>
+                {/* Unified model grid — library first, then custom */}
+                {(() => {
+                  const byBatchMap = new Map<string, GeneratedImage[]>();
+                  const mdlOnlyPicker = generatedImages.filter(img => img.sourceType !== 'flat_lay');
+                  for (const img of mdlOnlyPicker) {
+                    const bid = img.batchId ?? img.id;
+                    if (!byBatchMap.has(bid)) byBatchMap.set(bid, []);
+                    byBatchMap.get(bid)!.push(img);
+                  }
+                  const customBatches = Array.from(byBatchMap.entries()).map(([batchId, imgs]) => ({ batchId, images: imgs.sort((a, b) => a.timestamp - b.timestamp) }));
+                  const defaultBatchIdPicker = currentImage && currentImage.sourceType !== 'flat_lay'
+                    ? (currentImage.batchId ?? currentImage.id)
+                    : (mdlOnlyPicker[0] ? (mdlOnlyPicker[0].batchId ?? mdlOnlyPicker[0].id) : null);
+                  const effectiveBatchIdPicker = selectedDressBatchId ?? defaultBatchIdPicker;
+                  return (
+                    <div className="grid grid-cols-4 xl:grid-cols-5 gap-3">
+                      {presetModels.map((preset) => {
+                        const isSelected = modelSource === 'library' && selectedPresetModelId === preset.id;
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => { setSelectedPresetModelId(preset.id); setModelSource('library'); setViewMode(prevViewModeRef.current); }}
+                            className={`relative rounded-xl overflow-hidden border-2 transition-all ${isSelected ? 'border-krea-accent shadow-lg shadow-krea-accent/20' : 'border-transparent hover:border-krea-border'}`}
+                          >
+                            <img src={preset.imageUrl} alt={preset.name} className="w-full aspect-[2/3] object-cover" />
+                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-2">
+                              <p className="text-xs text-white font-medium truncate">{preset.name}</p>
+                              <p className="text-[10px] text-white/70 truncate">{preset.gender[0]} · {preset.ethnicity.split(' /')[0]}</p>
+                            </div>
+                            <div className="absolute top-2 left-2">
+                              <span className="text-[9px] font-bold uppercase tracking-widest bg-black/50 text-white/80 px-1.5 py-0.5 rounded">Library</span>
+                            </div>
+                            {isSelected && (
+                              <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-krea-accent flex items-center justify-center">
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5L4 7L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                      {customBatches.map(({ batchId, images }) => {
+                        const frontImg = images.find(img => img.angleId === 'front') ?? images[0];
+                        const isSelected = effectiveBatchIdPicker === batchId && modelSource === 'saved';
+                        return (
+                          <button
+                            key={batchId}
+                            type="button"
+                            onClick={() => { setSelectedDressBatchId(batchId); setModelSource('saved'); setViewMode(prevViewModeRef.current); }}
+                            className={`relative rounded-xl overflow-hidden border-2 transition-all ${isSelected ? 'border-krea-accent shadow-lg shadow-krea-accent/20' : 'border-transparent hover:border-krea-border'}`}
+                          >
+                            <img src={frontImg.url} alt={frontImg.attributes?.name ?? 'Model'} className="w-full aspect-[2/3] object-cover" />
+                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-2">
+                              <p className="text-xs text-white font-medium truncate">{frontImg.attributes?.name ?? 'Unnamed'}</p>
+                              <p className="text-[10px] text-white/70 truncate">{images.length} pose{images.length !== 1 ? 's' : ''}</p>
+                            </div>
+                            {isSelected && (
+                              <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-krea-accent flex items-center justify-center">
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5L4 7L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </motion.div>
+            ) : viewMode === 'builder' ? (
               <motion.div 
                 key="builder"
                 initial={{ opacity: 0, scale: 0.95 }}
@@ -2053,9 +2382,10 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                     })()}
                     </div>
 
-                    {/* Details - same height as preview card, button aligned with card bottom */}
+                    {/* Details - same height as preview card, content vertically centered, button at bottom */}
                     <div className="flex flex-col h-[min(65vh,560px)] min-h-0">
-                      <div className="flex flex-col gap-6 md:gap-8 flex-shrink-0">
+                      <div className="flex-1" />
+                      <div className="flex flex-col gap-6 md:gap-8">
                         <div className="space-y-1">
                           <h2 className="text-3xl font-display font-bold">
                             {(currentImage?.attributes?.name || attributes.name) || 'Unnamed Model'}
@@ -2086,8 +2416,9 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                           </div>
                         </div>
                       </div>
+                      <div className="flex-1" />
 
-                      <div className="flex gap-3 mt-auto pt-4">
+                      <div className="flex gap-3 pt-4">
                         <button 
                           onClick={() => handleGenerate(false)}
                           disabled={isGeneratingModel}
@@ -2286,14 +2617,6 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
               >
                 {(() => {
                   const modelOnly = generatedImages.filter(img => img.sourceType !== 'flat_lay');
-                  if (modelOnly.length === 0) {
-                    return (
-                      <div className="col-span-full py-20 text-center space-y-4">
-                        <History className="w-12 h-12 text-krea-muted mx-auto" />
-                        <p className="text-krea-muted">No models generated yet.</p>
-                      </div>
-                    );
-                  }
                   const byBatch = new Map<string, GeneratedImage[]>();
                   for (const img of modelOnly) {
                     const bid = img.batchId ?? img.id;
@@ -2306,26 +2629,75 @@ The ONLY changes are pose/angle and background/lighting. Everything else must be
                   }));
                   return (
                     <>
-                      <div className="col-span-full mb-4 flex items-center justify-between">
-                        <p className="text-xs text-krea-muted">
-                          Showing {batches.length} model{batches.length !== 1 ? 's' : ''}.
-                          {generatedImages.length > MAX_SAVED_MODELS && ` (Only the last ${MAX_SAVED_MODELS} are saved permanently)`}
-                        </p>
-                        <button 
-                          onClick={() => {
-                            if (confirm('Are you sure you want to clear all models? This cannot be undone.')) {
-                              setGeneratedImages(prev => prev.filter(img => img.sourceType === 'flat_lay'));
-                              if (currentImage && currentImage.sourceType !== 'flat_lay') setCurrentImage(null);
-                              setGalleryBatchIndex({});
-                            }
-                          }}
-                          className="text-[10px] font-bold uppercase tracking-widest text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1.5"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          Clear All
-                        </button>
+                      {/* Tabs */}
+                      <div className="col-span-full mb-6 flex items-center justify-between">
+                        <div className="flex gap-1 p-1 rounded-lg bg-krea-input-bg border border-krea-border text-xs font-medium">
+                          {(['all', 'library', 'custom'] as const).map((tab) => {
+                            const label = tab === 'all' ? `All (${presetModels.length + batches.length})` : tab === 'library' ? `Library (${presetModels.length})` : `My Models (${batches.length})`;
+                            return (
+                              <button
+                                key={tab}
+                                type="button"
+                                onClick={() => setModelGalleryTab(tab)}
+                                className={`px-3 py-1.5 rounded-md transition-colors ${modelGalleryTab === tab ? 'bg-krea-bg text-krea-text shadow-sm' : 'text-krea-muted hover:text-krea-text'}`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {batches.length > 0 && modelGalleryTab !== 'library' && (
+                          <button
+                            onClick={() => {
+                              if (confirm('Clear all custom models? This cannot be undone.')) {
+                                setGeneratedImages(prev => prev.filter(img => img.sourceType === 'flat_lay'));
+                                if (currentImage && currentImage.sourceType !== 'flat_lay') setCurrentImage(null);
+                                setGalleryBatchIndex({});
+                              }
+                            }}
+                            className="text-[10px] font-bold uppercase tracking-widest text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1.5"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            Clear Custom
+                          </button>
+                        )}
                       </div>
-                      {batches.map(({ batchId, images }) => {
+                      {/* Library models */}
+                      {modelGalleryTab !== 'custom' && presetModels.map((preset) => {
+                        const isActive = modelSource === 'library' && selectedPresetModelId === preset.id;
+                        return (
+                          <div key={preset.id} className="space-y-2">
+                            <div
+                              className={`group relative aspect-[2/3] bg-krea-input-bg rounded-xl overflow-hidden border-2 cursor-pointer transition-all ${isActive ? 'border-krea-accent' : 'border-krea-border hover:border-krea-muted'}`}
+                              onClick={() => { setModelSource('library'); setSelectedPresetModelId(preset.id); }}
+                            >
+                              <img src={preset.imageUrl} alt={preset.name} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" referrerPolicy="no-referrer" />
+                              <div className="absolute top-2 left-2">
+                                <span className="text-[9px] font-bold uppercase tracking-widest bg-black/50 text-white/80 px-1.5 py-0.5 rounded">Library</span>
+                              </div>
+                              {isActive && (
+                                <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-krea-accent flex items-center justify-center">
+                                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5L4 7L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-center">
+                              <p className="font-medium text-krea-text truncate">{preset.name}</p>
+                              <p className="text-sm text-krea-muted truncate">{preset.gender} · {preset.ethnicity.split(' /')[0]}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {/* Custom models */}
+                      {modelGalleryTab === 'custom' && batches.length === 0 && (
+                        <div className="col-span-full py-20 text-center space-y-3">
+                          <p className="text-krea-muted text-sm">No custom models yet.</p>
+                          <button type="button" onClick={() => { setActiveTab('model'); setViewMode('builder'); }} className="text-sm text-krea-accent hover:underline">
+                            Build one in the Model tab →
+                          </button>
+                        </div>
+                      )}
+                      {modelGalleryTab !== 'library' && batches.map(({ batchId, images }) => {
                         const idx = galleryBatchIndex[batchId] ?? 0;
                         const currentImg = images[Math.min(idx, images.length - 1)];
                         const hasMultiple = images.length > 1;
