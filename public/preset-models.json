@@ -10,8 +10,8 @@
     "hairStyle": "Long box braids",
     "hairColor": "Black",
     "ageRange": "18–24",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-01.png",
-    "generatedAt": "2026-03-06T23:20:12.349Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-01.png",
+    "generatedAt": "2026-03-06T23:51:16.974Z"
   },
   {
     "id": "model-02",
@@ -24,8 +24,8 @@
     "hairStyle": "Natural afro",
     "hairColor": "Black",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-02.png",
-    "generatedAt": "2026-03-06T23:20:33.439Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-02.png",
+    "generatedAt": "2026-03-06T23:51:48.964Z"
   },
   {
     "id": "model-03",
@@ -38,8 +38,8 @@
     "hairStyle": "Straight, long",
     "hairColor": "Black",
     "ageRange": "18–24",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-03.png",
-    "generatedAt": "2026-03-06T23:20:53.566Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-03.png",
+    "generatedAt": "2026-03-06T23:52:17.615Z"
   },
   {
     "id": "model-04",
@@ -52,8 +52,8 @@
     "hairStyle": "Straight, long",
     "hairColor": "Black",
     "ageRange": "18–24",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-04.png",
-    "generatedAt": "2026-03-06T23:21:13.036Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-04.png",
+    "generatedAt": "2026-03-06T23:52:45.751Z"
   },
   {
     "id": "model-05",
@@ -66,8 +66,8 @@
     "hairStyle": "Wavy, shoulder length",
     "hairColor": "Dark Brown",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-05.png",
-    "generatedAt": "2026-03-06T23:21:38.668Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-05.png",
+    "generatedAt": "2026-03-06T23:53:07.111Z"
   },
   {
     "id": "model-06",
@@ -80,8 +80,8 @@
     "hairStyle": "Straight, long",
     "hairColor": "Blonde",
     "ageRange": "18–24",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-06.png",
-    "generatedAt": "2026-03-06T23:22:05.295Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-06.png",
+    "generatedAt": "2026-03-06T23:53:28.049Z"
   },
   {
     "id": "model-07",
@@ -94,8 +94,8 @@
     "hairStyle": "Long waves",
     "hairColor": "Dark Brown",
     "ageRange": "18–24",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-07.png",
-    "generatedAt": "2026-03-06T23:22:26.490Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-07.png",
+    "generatedAt": "2026-03-06T23:53:50.578Z"
   },
   {
     "id": "model-08",
@@ -108,8 +108,8 @@
     "hairStyle": "Curly, medium length",
     "hairColor": "Dark Brown",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-08.png",
-    "generatedAt": "2026-03-06T23:22:46.301Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-08.png",
+    "generatedAt": "2026-03-06T23:54:11.211Z"
   },
   {
     "id": "model-09",
@@ -122,8 +122,8 @@
     "hairStyle": "Low fade",
     "hairColor": "Black",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-09.png",
-    "generatedAt": "2026-03-06T23:23:07.047Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-09.png",
+    "generatedAt": "2026-03-06T23:54:31.371Z"
   },
   {
     "id": "model-10",
@@ -136,8 +136,8 @@
     "hairStyle": "Short textured",
     "hairColor": "Black",
     "ageRange": "18–24",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-10.png",
-    "generatedAt": "2026-03-06T23:23:26.600Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-10.png",
+    "generatedAt": "2026-03-06T23:54:51.727Z"
   },
   {
     "id": "model-11",
@@ -150,8 +150,8 @@
     "hairStyle": "Short, neat",
     "hairColor": "Black",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-11.png",
-    "generatedAt": "2026-03-06T23:23:54.042Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-11.png",
+    "generatedAt": "2026-03-06T23:55:13.837Z"
   },
   {
     "id": "model-12",
@@ -164,8 +164,8 @@
     "hairStyle": "Short textured",
     "hairColor": "Black",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-12.png",
-    "generatedAt": "2026-03-06T23:24:15.032Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-12.png",
+    "generatedAt": "2026-03-06T23:56:09.392Z"
   },
   {
     "id": "model-13",
@@ -178,8 +178,8 @@
     "hairStyle": "Short, neat",
     "hairColor": "Brown",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-13.png",
-    "generatedAt": "2026-03-06T23:24:41.245Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-13.png",
+    "generatedAt": "2026-03-06T23:56:41.973Z"
   },
   {
     "id": "model-14",
@@ -192,8 +192,8 @@
     "hairStyle": "Short, neat",
     "hairColor": "Black",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-14.png",
-    "generatedAt": "2026-03-06T23:25:01.258Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-14.png",
+    "generatedAt": "2026-03-06T23:57:04.442Z"
   },
   {
     "id": "model-15",
@@ -206,7 +206,7 @@
     "hairStyle": "Cropped, androgynous",
     "hairColor": "Dark Brown",
     "ageRange": "25–34",
-    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/model-15.png",
-    "generatedAt": "2026-03-06T23:25:29.992Z"
+    "imageUrl": "https://axuxhuif6aiflbu8.public.blob.vercel-storage.com/preset-models/v3/model-15.png",
+    "generatedAt": "2026-03-06T23:57:27.446Z"
   }
 ]

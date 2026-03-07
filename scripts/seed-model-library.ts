@@ -26,6 +26,9 @@ import { MODEL_DEFINITIONS, type PresetModel } from './model-definitions.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = path.resolve(__dirname, '../public/preset-models.json');
 
+/** Bump this when you want to force new Blob URLs (cache-busts CDN automatically). */
+const LIBRARY_VERSION = 'v3';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -79,7 +82,7 @@ Hair: ${model.hairStyle}, ${model.hairColor}
 Age range: ${model.ageRange}
 
 REQUIREMENTS:
-- Background: pure white (#FFFFFF). Soft, even studio lighting. Clean, minimal e-commerce look.
+- Background: pure white seamless studio backdrop (#FFFFFF). Completely flat white — no gradient, no vignette, no grey tones, no color shift anywhere in the frame. The floor is the same seamless white sweep as the wall with no visible horizon line or studio edges. Very soft contact shadow directly under the feet only. Soft, even studio lighting with no harsh shadows on the garment or body.
 - Front-facing, neutral expression, confident posture. Camera directly in front.
 - Full body portrait from head to toe
 - IMPORTANT: Must not crop head or feet. The entire body from head to toes must be visible.
@@ -187,7 +190,7 @@ async function main() {
     const cropped = await cropTo2x3(base64);
 
     console.log(`[${model.id}] uploading to Vercel Blob...`);
-    const { url } = await put(`preset-models/${model.id}.png`, cropped, {
+    const { url } = await put(`preset-models/${LIBRARY_VERSION}/${model.id}.png`, cropped, {
       access: 'public',
       contentType: 'image/png',
       token: blobToken,
